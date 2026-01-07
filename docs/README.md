@@ -1,48 +1,223 @@
-# 🛡️ Task 4: Automated Vulnerability Management Pipeline (V10 Ultimate)
+# 🔐 Task 4: Automated Vulnerability Management Pipeline (V10 Ultimate)
 
-> **"From Detection to Verification: A Closed-Loop Security Pipeline"**
-
-## 📖 1. Giới thiệu (Overview)
-
-Dự án này là một hệ thống tự động hóa quy trình quản lý lỗ hổng bảo mật (Vulnerability Management), được thiết kế để giải quyết bài toán "Quá tải cảnh báo" (Alert Fatigue) trong SecOps.
-
-Hệ thống tích hợp đa nguồn quét (ZAP, OpenVAS), chuẩn hóa dữ liệu, ánh xạ vào khung **MITRE ATT&CK**, tính điểm rủi ro thông minh và đặc biệt sử dụng **AI Agent (Python-based)** để tự động xác thực lại lỗ hổng, loại bỏ False Positives.
-
-### 🚀 Tính năng nổi bật (Key Features)
-- **Hybrid Scanning:** Hợp nhất dữ liệu từ **OWASP ZAP** (Web App) và **OpenVAS** (Infrastructure).
-- **MITRE ATT&CK Integration:** Ánh xạ lỗ hổng vào Tactic/Technique (VD: *T1189 - Drive-by Compromise*).
-- **Smart Risk Scoring:** Tính điểm ưu tiên (P1-P4) dựa trên ngữ cảnh và trọng số tùy chỉnh.
-- **🤖 Auto-Verification Agent (MacGyver Mode):**
-  - Tự động phát hiện công cụ môi trường (nmap, curl).
-  - Tự động chuyển sang dùng thư viện Python (`socket`, `requests`) nếu thiếu tool CLI.
-  - Xác thực thực tế (Active Probing) để khẳng định lỗ hổng là CÓ THẬT.
-- **Professional Reporting:** Xuất báo cáo Excel với dashboard, màu sắc trực quan.
+> “From Detection to Verification: A Closed‑Loop Security Pipeline”
+> Hệ thống tự động hóa quy trình quản lý lỗ hổng bảo mật, hợp nhất dữ liệu scan đa nguồn, chuẩn hoá, map ATT&CK, scoring và tự động xác thực với agent AI.
 
 ---
 
-## 🏗️ 2. Kiến trúc hệ thống (Architecture)
+## 🧠 1. Giới thiệu (Overview)
+
+Dự án này là một **Vulnerability Management Pipeline** tích hợp:
+- **Dynamic Application Security Testing (DAST)** bằng **OWASP ZAP**
+- **Infrastructure/Host Scanning** bằng **OpenVAS / Greenbone**
+- Chuẩn hoá đầu ra, merge kết quả, ánh xạ vào **MITRE ATT&CK**
+- **Smart Risk Scoring** & lọc **False Positive** bằng **Auto‑Verification Agent (AI)**
+
+Mục tiêu: chuyển các kết quả scan rời rạc thành dữ liệu có thể phân tích, ưu tiên và hành động.
+
+---
+
+## ⚙️ 2. Tính năng chính (Key Features)
+
+* 🎯 **Hybrid Scanning**: ZAP + OpenVAS
+* 📊 **Normalization & Merge Pipeline**
+* 🧭 **MITRE ATT&CK Mapping**
+* 📈 **Smart Risk Scoring** (P1–P4)
+* 🤖 **Auto‑Verification Agent (AI Agent)** — kiểm chứng tìm thấy bằng probe thực tế
+* 📄 **Professional Report Export** (Excel với dashboard trực quan)
+* 🛠️ Modular, extensible CLI + Python scripts
+
+---
+
+## 🏗️ 3. Kiến trúc hệ thống (Architecture)
 
 ```mermaid
 graph TD
     subgraph Scanners
-        ZAP[OWASP ZAP Docker]
-        OPV[OpenVAS / Greenbone Docker]
+        ZAP[OWASP ZAP (Docker)]
+        OPV[OpenVAS / Greenbone (Docker)]
     end
-    
     subgraph Core Pipeline
-        P1[Parsers & Normalization]
-        P2[Merge & Deduplication]
+        P1[Parse & Normalize]
+        P2[Merge & Dedup]
         P3[MITRE ATT&CK Mapping]
-        P4[Risk Calculation]
+        P4[Risk Scoring]
     end
-    
     subgraph Verification Agent
-        AG[🤖 AI Agent / Auto-Verifier]
+        AI[Auto‑Verification AI Agent]
     end
 
-    ZAP -->|JSON/HTML Report| P1
-    OPV -->|XML Report| P1
+    ZAP --> P1
+    OPV --> P1
     P1 --> P2 --> P3 --> P4
-    P4 -->|Enriched Data| AG
-    AG -->|Self-Correction & Probe| AG
-    AG -->|Final Verified Report| XLS[Excel Report .xlsx]
+    P4 --> AI --> XLS[Final Verified Excel Report]
+```
+
+---
+
+## 🗂️ 4. Cấu trúc thư mục
+
+```
+/
+├─ data/
+│   ├─ raw/           # Reports gốc (JSON/XML)
+│   ├─ normalized/    # CSV đã chuẩn hoá
+│   └─ output/        # Kết quả merge + final reports
+├─ scripts/
+│   ├─ parse_zap.py
+│   ├─ parse_openvas.py
+│   ├─ merge_vulns.py
+│   └─ ai_verifier.py
+├─ mapping/
+│   ├─ attack_mapping_rules.yml
+│   └─ risk_weights.yml
+├─ docs/
+├─ requirements.txt
+└─ README.md
+```
+
+---
+
+## 🛠️ 5. Cài đặt & môi trường
+
+### 📦 Yêu cầu
+- Docker & Docker Compose
+- Python 3.10+
+- RAM ≥ 8GB
+- Quyền scan hợp pháp trên target
+
+---
+
+## 🧪 6. Triển khai OWASP ZAP (DAST)
+
+**Khởi chạy target mẫu (ví dụ DVWA):**
+
+```bash
+docker run -d -p 8080:80 --name dvwa vulnerables/web-dvwa
+```
+
+**Chạy ZAP scan (baseline):**
+
+```bash
+docker run --rm -v $(pwd)/data/raw:/zap/wrk/:rw \
+  ghcr.io/zaproxy/zaproxy:stable \
+  zap-baseline.py \
+  -t http://172.17.0.1:8080 \
+  -J zap_report.json \
+  -r zap_report.html
+```
+
+- Lưu `zap_report.json` vào `data/raw/`
+- JSON dùng để parse/normalize
+
+---
+
+## 🧪 7. Triển khai OpenVAS (Greenbone)
+
+**Start bằng Docker Compose:**
+
+```bash
+export DOWNLOAD_DIR=$HOME/greenbone-community-container
+mkdir -p $DOWNLOAD_DIR && cd $DOWNLOAD_DIR
+curl -L https://greenbone.github.io/docs/latest/_static/docker-compose.yml -o docker-compose.yml
+docker compose pull
+docker compose up -d
+```
+
+**Kiểm tra feed sync (bắt buộc):**
+
+```bash
+docker compose logs gvmd | grep -Ei "SCAP|CERT|NVT|Current"
+```
+
+**Đổi mật khẩu admin:**
+
+```bash
+docker compose exec -u gvmd gvmd gvmd --user=admin --new-password="YourPass!"
+```
+
+---
+
+## 📤 8. Export & Normalize Reports
+
+### OpenVAS → XML
+- Qua UI: Scans → Reports → Export XML
+- Save: `data/raw/openvas_report.xml`
+
+**Parse XML → CSV:**
+
+```bash
+python3 scripts/parse_openvas.py \
+  data/raw/openvas_report.xml \
+  data/normalized/openvas_findings.csv
+```
+
+### ZAP → JSON
+
+```bash
+python3 scripts/parse_zap.py \
+  data/raw/zap_report.json \
+  data/normalized/zap_findings.csv
+```
+
+---
+
+## 🔗 9. Merge & Scoring
+
+**Merge CSVs:**
+
+```bash
+python3 scripts/merge_vulns.py
+```
+
+**Output:**
+```
+data/output/vuln_raw.csv
+```
+
+Fields include: scanner, asset, finding, severity, CVE/CWE, ATT&CK IDs, risk score.
+
+---
+
+## 🤖 10. AI Verification Agent
+
+Auto‑verify vulnerabilities by:
+- Probing the target (protocols, tools available)
+- Active checks to reduce false positives
+- Update final report to `data/output/verified_report.xlsx`
+
+---
+
+## 📈 11. Báo cáo & Dashboard
+
+Kết quả cuối cùng:
+- **Excel Report** với bảng ưu tiên P1–P4
+- Biểu đồ ATT&CK heatmap
+- Chi tiết từng lỗ hổng + bằng chứng xác thực
+
+---
+
+## 💡 12. Contributing
+
+Bạn có thể đóng góp:
+- rule mapping mới (mapping/*.yml)
+- script parser
+- City score refinements
+- thêm scanner khác (Snyk, Trivy, Semgrep)
+
+---
+
+## 📝 13. License
+
+Project sử dụng **MIT License** (hoặc chọn giấy phép phù hợp cho team).
+
+---
+
+## 📌 14. Lời kết
+
+Đây là một pipeline hoàn chỉnh từ **scan → normalize → merge → map ATT&CK → risk score → verified report**, hữu ích để demo, học tập hoặc triển khai nội bộ DevSecOps.
+
+---
+
+*Generated by Task 4 README generator.*
+
