@@ -1,0 +1,221 @@
+# 🎯 Risk Scoring Weights & Configuration - V9 OPTIMIZED
+#
+# Purpose: Define weights for risk score calculation in calculate_risk_priority_v9.py
+# Formula: risk_score = (tactic_weight * 0.4 + severity_weight * 0.4 + asset_weight * 0.2) * exposure * confidence
+# Range: 0-100 (higher = more critical)
+#
+# Improvements from V8:
+# ✅ Better tactic weighting based on impact
+# ✅ Enhanced asset criticality model
+# ✅ Smarter exposure multipliers
+# ✅ Improved priority thresholds
+# ✅ Confidence-aware scoring
+# ✅ Better documentation
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TACTIC IMPACT WEIGHTS (0.0 - 1.0)
+# ═══════════════════════════════════════════════════════════════════════════════
+# Higher value = more direct security impact
+# Used to calculate 40% of risk score
+# Ordered by impact severity
+
+tactic_weights:
+  # CRITICAL - Direct business impact
+  "Exfiltration": 1.0         # Data theft - immediate compliance breach
+  "Impact": 1.0               # Damage/disruption - business loss
+  "Initial Access": 1.0       # Entry point - enables all attacks
+  
+  # SEVERE - System compromise
+  "Execution": 0.95           # Code execution - full system control
+  "Privilege Escalation": 0.95 # Root access - system takeover
+  
+  # HIGH - Persistent threats
+  "Persistence": 0.90         # Maintain access - ongoing threat
+  "Credential Access": 0.90   # Steal credentials - cascade attacks
+  
+  # MEDIUM - Lateral movement & persistence
+  "Lateral Movement": 0.85    # Spread within network
+  "Command and Control": 0.85 # Attacker communication
+  
+  # MEDIUM-LOW - Data gathering
+  "Collection": 0.80          # Data harvesting
+  "Defense Evasion": 0.70     # Hide malicious activity
+  
+  # LOW - Reconnaissance
+  "Discovery": 0.60           # Find vulnerable resources
+  "Reconnaissance": 0.50      # Passive info gathering
+  
+  # MINIMAL - Preparation
+  "Resource Development": 0.40 # Setup phase (low immediate threat)
+  
+  # UNKNOWN - Unmapped findings
+  "Unknown": 0.30             # Unmapped vulnerabilities (apply AI)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SEVERITY WEIGHTS (0.0 - 1.0)
+# ═══════════════════════════════════════════════════════════════════════════════
+# Maps CVSS + ZAP/OpenVAS severity levels to weights
+# Used to calculate 40% of risk score
+# Standard CVSS-based classifications
+
+severity_weights:
+  "Critical": 1.0      # CVSS 9.0-10.0 - Immediate exploitation
+  "High": 0.9          # CVSS 7.0-8.9 - Easy exploitation
+  "Medium": 0.6        # CVSS 4.0-6.9 - Moderate effort
+  "Low": 0.3           # CVSS 0.1-3.9 - Difficult exploitation
+  "Informational": 0.1 # CVSS 0.0 - Informational only
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ASSET CRITICALITY (0.0 - 1.0)
+# ═══════════════════════════════════════════════════════════════════════════════
+# Used to calculate 20% of risk score
+# Customize based on your CMDB or asset inventory
+# Default: 0.7 for web assets (assume production-like)
+
+asset_criticality:
+  # Default for unknown/unclassified assets
+  default: 0.7  # Assume medium-critical (web apps in PoC)
+  
+  # Example overrides (uncomment to use):
+  # Production assets (enable these for real deployment)
+  # "prod-web.company.com": 1.0     # Production = critical
+  # "prod-db.company.com": 1.0      # Production DB = critical
+  # "prod-api.company.com": 1.0     # Production API = critical
+  
+  # Staging/QA assets
+  # "staging-web.company.com": 0.6  # Staging = medium
+  # "qa-web.company.com": 0.5       # QA = lower priority
+  
+  # Development assets
+  # "dev-web.company.com": 0.3      # Dev = lower priority
+  # "localhost": 0.2                # Local = minimal priority
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# EXPOSURE MULTIPLIERS
+# ═══════════════════════════════════════════════════════════════════════════════
+# Adjusts final risk score based on network exposure
+# Internet-facing = higher risk (1.2x), Internal = medium (1.0x), Localhost = low (0.8x)
+
+exposure_multiplier:
+  internet_facing: 1.2  # +20% for public internet exposure
+  internal: 1.0         # Baseline for internal network
+  localhost: 0.8        # -20% for lab/dev (this sprint uses lab setup)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PRIORITY THRESHOLDS (0-100 scale)
+# ═══════════════════════════════════════════════════════════════════════════════
+# Maps risk scores to Priority levels (P1-P4)
+# Used by management/security teams for SLA & remediation planning
+
+priority_thresholds:
+  # P1: Critical - Remediate in 24 hours
+  # Risk: 75-100 (business-critical)
+  # Examples: RCE, SQL injection, authentication bypass
+  P1: 75
+  
+  # P2: High - Remediate in 7 days
+  # Risk: 60-74 (significant threat)
+  # Examples: XSS, weak auth, privilege escalation
+  P2: 60
+  
+  # P3: Medium - Remediate in 30 days
+  # Risk: 40-59 (moderate threat)
+  # Examples: weak cookies, missing headers, info disclosure
+  P3: 40
+  
+  # P4: Low - Backlog
+  # Risk: 0-39 (low threat)
+  # Examples: informational findings, low-impact issues
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FORMULA EXPLANATION
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# risk_score = (tactic_weight * 0.4 + severity_weight * 0.4 + asset_weight * 0.2) * exposure * confidence
+#
+# COMPONENTS:
+#   tactic_weight (40%):     Impact of ATT&CK tactic (0.0-1.0)
+#   severity_weight (40%):   Severity from scanner (0.0-1.0)
+#   asset_weight (20%):      Criticality of asset (0.0-1.0)
+#   exposure (1.2, 1.0, 0.8): Network exposure multiplier
+#   confidence (0.3-1.0):     AI/rule confidence in mapping
+#
+# RESULT:
+#   0-100 scale
+#   Clamped to valid range
+#   Rounded to 1 decimal place
+#
+# EXAMPLE CALCULATIONS:
+#
+#   1. High-priority XSS on production:
+#      - Tactic: Initial Access (1.0) → 1.0 * 0.4 = 0.4
+#      - Severity: High (0.9) → 0.9 * 0.4 = 0.36
+#      - Asset: Production (1.0) → 1.0 * 0.2 = 0.2
+#      - Base: 0.4 + 0.36 + 0.2 = 0.96
+#      - Exposure: internet-facing (1.2) → 0.96 * 1.2 = 1.152
+#      - Confidence: 0.95 (high) → 1.152 * 0.95 = 1.094
+#      - Final: min(1.094 * 100, 100) = 100.0 → P1 CRITICAL
+#
+#   2. Low XSS on lab/localhost:
+#      - Tactic: Initial Access (1.0) → 1.0 * 0.4 = 0.4
+#      - Severity: Medium (0.6) → 0.6 * 0.4 = 0.24
+#      - Asset: Lab (0.3) → 0.3 * 0.2 = 0.06
+#      - Base: 0.4 + 0.24 + 0.06 = 0.7
+#      - Exposure: localhost (0.8) → 0.7 * 0.8 = 0.56
+#      - Confidence: 0.5 (low) → 0.56 * 0.5 = 0.28
+#      - Final: 0.28 * 100 = 28.0 → P4 LOW
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# INTERPRETATION GUIDE
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Risk Score 90-100: CRITICAL (P1)
+#   Immediate action required
+#   Examples: RCE, SQL injection, auth bypass on production
+#   SLA: Fix in 24 hours
+#
+# Risk Score 75-89: CRITICAL (P1)
+#   Urgent remediation needed
+#   Examples: Privilege escalation, web shell potential
+#   SLA: Fix in 24 hours
+#
+# Risk Score 60-74: HIGH (P2)
+#   Important but not emergency
+#   Examples: XSS, weak cookies, credential theft risk
+#   SLA: Fix in 7 days
+#
+# Risk Score 40-59: MEDIUM (P3)
+#   Should be addressed in normal cycle
+#   Examples: Missing headers, info disclosure, weak hashing
+#   SLA: Fix in 30 days
+#
+# Risk Score 0-39: LOW (P4)
+#   Consider for backlog
+#   Examples: Informational findings, cosmetic issues
+#   SLA: Fix as time permits
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CUSTOMIZATION TIPS
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# 1. For your organization:
+#    - Adjust asset_criticality to match your actual asset criticality
+#    - Update priority_thresholds based on your SLA requirements
+#    - Modify tactic_weights if your threat model differs
+#
+# 2. For different environments:
+#    - Lab/Dev: Lower exposure multiplier, asset criticality
+#    - Production: Higher exposure multiplier, asset criticality
+#    - Production DB servers: Maximum asset criticality (1.0)
+#
+# 3. For compliance:
+#    - P1 threshold may need to be higher for compliance (e.g., 80)
+#    - All critical findings should be prioritized regardless of lab vs prod
+#    - Document risk scoring methodology for audit
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# VERSION HISTORY
+# ═══════════════════════════════════════════════════════════════════════════════
+# v9: ✅ Enhanced tactic weights, better documentation, confidence multiplier
+# v8: Initial version (basic weights, no confidence)
+# ═══════════════════════════════════════════════════════════════════════════════

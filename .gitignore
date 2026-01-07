@@ -1,0 +1,37 @@
+# --- 1. Python & Environment ---
+__pycache__/
+*.pyc
+venv/
+env/
+.env
+.DS_Store
+
+# --- 2. Logs (File nhật ký chạy) ---
+logs/*
+*.log
+pipeline_v10_ultimate.log
+pipeline_v10_debug.log
+
+# --- 3. Data & Reports (CỰC KỲ QUAN TRỌNG) ---
+# Chặn tất cả file dữ liệu nhạy cảm
+data/raw/*
+data/normalized/*
+data/output/*
+
+# Chặn file báo cáo Excel/HTML nằm ở thư mục gốc (nếu có lỡ lưu ra ngoài)
+*.xlsx
+*.csv
+*.html
+*.xml
+*.json
+
+# --- 4. GIỮ LẠI CẤU TRÚC THƯ MỤC (Exception Rules) ---
+# Dùng dấu '!' để bảo Git: "Đừng ignore file .gitkeep"
+# Điều này giúp Git đẩy các thư mục rỗng lên để code không bị lỗi
+!data/raw/.gitkeep
+!data/normalized/.gitkeep
+!data/output/.gitkeep
+
+# --- 5. IDE Settings (Cấu hình trình soạn thảo) ---
+.vscode/
+.idea/
