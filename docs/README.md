@@ -34,23 +34,28 @@ Mục tiêu: chuyển các kết quả scan rời rạc thành dữ liệu có t
 ```mermaid
 graph TD
     subgraph Scanners
-        ZAP[OWASP ZAP (Docker)]
-        OPV[OpenVAS / Greenbone (Docker)]
+        ZAP[OWASP_ZAP_Docker]
+        OPV[OpenVAS_Greenbone_Docker]
     end
-    subgraph Core Pipeline
-        P1[Parse & Normalize]
-        P2[Merge & Dedup]
-        P3[MITRE ATT&CK Mapping]
-        P4[Risk Scoring]
+
+    subgraph Core_Pipeline
+        P1[Parse_and_Normalize]
+        P2[Merge_and_Deduplicate]
+        P3[MITRE_ATTCK_Mapping]
+        P4[Risk_Scoring]
     end
-    subgraph Verification Agent
-        AI[Auto‑Verification AI Agent]
+
+    subgraph Verification_Agent
+        AI[Auto_Verification_AI_Agent]
     end
 
     ZAP --> P1
     OPV --> P1
-    P1 --> P2 --> P3 --> P4
-    P4 --> AI --> XLS[Final Verified Excel Report]
+    P1 --> P2
+    P2 --> P3
+    P3 --> P4
+    P4 --> AI
+    AI --> XLS[Final_Verified_Excel_Report]
 ```
 
 ---
