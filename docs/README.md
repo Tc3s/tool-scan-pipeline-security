@@ -82,7 +82,7 @@ task4-attack-vuln-mgmt/
 │   ├── attack_mapping_rules.yml  # Luật gán MITRE ATT&CK
 │   └── risk_weights.yml          # Trọng số tính điểm Risk
 ├── scripts/
-│   ├── run_pipeline_v10_final.py # MASTER SCRIPT
+│   ├── run_pipeline.py # MASTER SCRIPT
 │   ├── antigravity_agent_bridge.py # Agent Logic (Xác thực)
 │   ├── parse_zap.py              # Xử lý báo cáo ZAP
 │   ├── parse_openvas.py          # Xử lý báo cáo OpenVAS
@@ -116,7 +116,7 @@ Xem phần hướng dẫn setup ZAP và OpenVAS ở phía dưới.
 ### Bước 3 — Chạy Pipeline
 
 ```bash
-python3 scripts/run_pipeline_v10_final.py
+python3 scripts/run_pipeline.py
 ```
 
 **Menu tùy chọn (trong script):**
@@ -145,7 +145,7 @@ Trường quan trọng trong báo cáo:
 
 # PHẦN 2 — HƯỚNG DẪN SETUP ZAP VÀ OPENVAS (Chi tiết)
 
-Dựa trên file `Hướng dẫn triển khai OpenVAS cho Task 4.md` và `Bước đầu tiên_ Setup môi trường & cấu trúc project.md` đã upload, dưới đây là quy trình cài đặt chuẩn cho 2 công cụ.
+Dưới đây là quy trình cài đặt chuẩn cho 2 công cụ.
 
 ### 1️⃣ Yêu cầu tiên quyết
 
