@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 """
-🎯 MITRE ATT&CK + ZAP Vulnerability Scanner - V10 ULTIMATE
+🎯 MITRE ATT&CK + ZAP Vulnerability Scanner 
 (Features: Auto Venv + Tool Check + MacGyver Agent Prompt)
 """
 
