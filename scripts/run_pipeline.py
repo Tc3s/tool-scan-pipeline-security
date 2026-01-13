@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 
 """
-🎯 MITRE ATT&CK + ZAP Vulnerability Scanner 
-(Features: Auto Venv + Tool Check + MacGyver Agent Prompt)
+🎯 MITRE ATT&CK + ZAP Vulnerability Scanner
+(Features: Auto Venv + Tool Check + INFINITY AGENT PROMPT)
 """
 
 import os
@@ -19,7 +19,7 @@ ZAP_IMAGE = "ghcr.io/zaproxy/zaproxy:stable"
 RAW_DIR = os.path.join("data", "raw")
 JSON_REPORT = os.path.join(RAW_DIR, "zap_report.json")
 HTML_REPORT = os.path.join(RAW_DIR, "zap_report.html")
-LOG_FILE = "pipeline_v10_ultimate.log"
+LOG_FILE = "pipeline.log"
 
 # ============== GIAO DIỆN ==============
 class C:
@@ -71,8 +71,8 @@ def check_external_tools():
         
     if missing:
         Debugger.warning(f"MISSING TOOLS: {', '.join(missing)}")
-        print(f"   {C.YELLOW}👉 Recommendation: Install them (e.g., sudo apt install nmap sqlmap) OR the Agent will use Python fallbacks.{C.END}")
-        return missing # Trả về danh sách thiếu để đưa vào Prompt
+        print(f"   {C.YELLOW}👉 Recommendation: Install them OR the Agent will use Python fallbacks.{C.END}")
+        return missing
     return []
 
 def run_cmd(command, ignore_error=False):
@@ -170,7 +170,7 @@ def run_processing_phase():
     
     Debugger.success("Processing Complete.")
 
-# ============== PHASE 3: AGENT BRIDGE (MACGYVER PROMPT) ==============
+# ============== PHASE 3: AGENT BRIDGE (INFINITY PROMPT) ==============
 def run_bridge_phase(target_url, missing_tools=[]):
     Debugger.step("PHASE 3: AGENT HANDOFF")
     
@@ -189,34 +189,52 @@ def run_bridge_phase(target_url, missing_tools=[]):
     # --- TẠO GHI CHÚ VỀ TOOL THIẾU ---
     tool_warning = ""
     if missing_tools:
-        tool_warning = f"NOTE: The environment is MISSING these tools: {', '.join(missing_tools)}. USE PYTHON CODE INSTEAD."
+        tool_warning = f"WARNING: MISSING TOOLS ({', '.join(missing_tools)}). YOU MUST USE PYTHON SCRIPTS."
 
     print("\n" + "="*65)
-    print(f"{C.HEADER}{C.BOLD}🚀  PIPELINE COMPLETED - MACGYVER PROMPT READY  🚀{C.END}")
+    print(f"{C.HEADER}{C.BOLD}🚀  PIPELINE COMPLETED - INFINITY AGENT PROMPT READY  🚀{C.END}")
     print("="*65)
     print(f"✅ Data ready at: data/output/vuln_validation_queue.csv")
-    print(f"\n{C.YELLOW}👉 COPY THIS PROMPT TO AGENT:{C.END}")
-    print(f"{C.CYAN}--------------------------------------------------")
+    print(f"\n{C.YELLOW}👉 COPY THE PROMPT BELOW TO ANTIGRAVITY IDE:{C.END}")
     
-    # --- PROMPT THÔNG MINH (XỬ LÝ THIẾU TOOL) ---
-    print(f"You are a Senior Security Engineer. Target is: {target_url}")
-    print(f"Your mission: Validate findings in 'data/output/vuln_validation_queue.csv'.")
+    # --- PROMPT VÔ CỰC (INFINITY PROMPT) ---
+    print(f"{C.CYAN}--------------------------------------------------{C.END}")
+    print(f"You are an Elite Security Research Agent. Target: {target_url}")
+    print(f"Mission: Verify findings in 'data/output/vuln_validation_queue.csv' autonomously.")
+    
     if tool_warning:
         print(f"{C.RED}{C.BOLD}{tool_warning}{C.END}")
-        
-    print("\nEXECUTION PROTOCOL:")
-    print("1. Use Python (Pandas) to read the CSV file.")
-    print("2. Loop through EACH finding and verify it. BE ADAPTIVE:")
-    print("   - IF CLI tool (curl/nmap) is available -> Use it.")
-    print("   - IF CLI tool is MISSING -> Write & Run Python code (requests/socket) to verify.")
-    print("     (e.g., Use 'requests.head()' for Headers, 'socket.connect()' for Ports).")
-    print("3. Update the DataFrame:")
-    print("   - 'agent_status' = 'VERIFIED' (if confirmed).")
-    print("   - 'agent_command' = The command OR 'Python Script' used.")
-    print("   - 'agent_evidence' = Output summary.")
-    print("4. Save the CSV (overwrite).")
-    print(f"5. Generate report: {C.BOLD}{agent_py_cmd} {s_export}{C.END}")
-    print(f"--------------------------------------------------{C.END}")
+
+    print("\nEXECUTION FRAMEWORK (The OODA Loop):")
+    print("1. OBSERVE (Input): Read the CSV. Identify 'finding_name', 'cve', and 'url_or_port'.")
+    
+    print(f"\n2. ORIENT (Classify & Plan): Apply this Logic Matrix:")
+    
+    print(f"   {C.CYAN}[TYPE A] CVE-BASED (e.g., RegreSSHion, Heartbleed){C.END}")
+    print("      -> STRATEGY: Use Nmap NSE scripts or known Exploit payloads.")
+    print("      -> COMMAND: nmap -sV -p [port] --script [vuln_id] [target]")
+    
+    print(f"   {C.CYAN}[TYPE B] WEB LOGIC (e.g., Bypass 403, Headers){C.END}")
+    print("      -> STRATEGY: Manipulate HTTP Headers (X-Forwarded-For, User-Agent).")
+    print("      -> COMMAND: curl -I -H 'X-Forwarded-For: 127.0.0.1' [url]")
+    
+    print(f"   {C.CYAN}[TYPE C] INFRASTRUCTURE (e.g., EOL OS, 'general/tcp'){C.END}")
+    print("      -> STRATEGY: OS Fingerprinting. If port is 'general', scan top ports.")
+    print("      -> COMMAND: nmap -O -sV --top-ports 100 [target_ip]")
+    
+    print(f"   {C.CYAN}[TYPE D] FALLBACK (No Tools / Logic Bugs){C.END}")
+    print("      -> STRATEGY: WRITE PYTHON CODE. Do not fail if CLI tools are missing.")
+    print("      -> ACTION: Use 'requests', 'socket' to simulate the check.")
+    
+    print("\n3. ACT (Execute): Run the command/script in the Terminal.")
+    
+    print("\n4. REPORT (Update CSV):")
+    print("   - 'agent_status': 'VERIFIED' | 'CHECKED' | 'ERROR'")
+    print("   - 'agent_command': The Command/Script used.")
+    print("   - 'agent_evidence': Capture the Output.")
+    
+    print(f"\n5. FINISH: Save CSV & Run '{agent_py_cmd} {s_export}'")
+    print(f"{C.CYAN}--------------------------------------------------{C.END}")
 
 def main():
     os.system('cls' if os.name == 'nt' else 'clear')
@@ -225,7 +243,7 @@ def main():
     # Kiểm tra Tool ngay từ đầu
     missing_tools = check_external_tools()
 
-    print(f"{C.HEADER}{C.BOLD}🛡️   SECURITY PIPELINE V10 (ULTIMATE)   🛡️{C.END}")
+    print(f"{C.HEADER}{C.BOLD}🛡️   SECURITY PIPELINE V11 (INFINITY)   🛡️{C.END}")
     
     try:
         while True:
