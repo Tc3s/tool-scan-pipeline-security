@@ -2,7 +2,7 @@
 
 """
 🎯 MITRE ATT&CK + ZAP Vulnerability Scanner
-(Features: Auto Venv + Tool Check + INFINITY AGENT PROMPT)
+(Features: ZAP Docker Only + Auto Venv + Tool Check + HEURISTIC AUDITOR PROMPT)
 """
 
 import os
@@ -56,7 +56,7 @@ def get_python_exec():
 def check_external_tools():
     """Kiểm tra xem các tool CLI quan trọng có tồn tại không"""
     Debugger.info("Checking external CLI tools...")
-    tools = ["curl", "nmap", "sqlmap", "nikto"]
+    tools = ["curl", "nmap", "sqlmap", "nikto", "wpscan", "nuclei"]
     missing = []
     found = []
     
@@ -109,17 +109,19 @@ def fix_permissions():
             Debugger.success("Permissions fixed.")
         except: pass
 
-# ============== PHASE 1: SCANNING ==============
+# ============== PHASE 1: SCANNING (ZAP ONLY) ==============
 def run_scanning_phase():
-    Debugger.step("PHASE 1: ACTIVE SCANNING")
+    Debugger.step("PHASE 1: ACTIVE SCANNING (ZAP)")
+    
+    # Check Docker
     try: subprocess.run("docker --version", shell=True, check=True, stdout=subprocess.DEVNULL)
-    except: Debugger.error("Docker missing!"); sys.exit(1)
+    except: Debugger.error("Docker missing! Cannot run ZAP."); sys.exit(1)
 
     print(f"\n{C.HEADER}--- TARGET CONFIG ---{C.END}")
     url = input(f"{C.BOLD}👉 Target URL (Default: http://scanme.nmap.org): {C.END}").strip() or "http://scanme.nmap.org"
     if not url.startswith("http"): url = "http://" + url
     
-    print(f"\n{C.CYAN}[ SCAN MODES ]{C.END}")
+    print(f"\n{C.CYAN}[ ZAP SCAN MODES ]{C.END}")
     print("1. ⚡ Quick Baseline Scan")
     print("2. 🐢 Full Deep Scan (Recommended)")
     print("3. 🕷️ AJAX Spider Scan")
@@ -129,6 +131,7 @@ def run_scanning_phase():
     if choice == '2': script = "zap-full-scan.py"
     elif choice == '3': params = "-j"
 
+    # Xóa report cũ
     if os.path.exists(JSON_REPORT):
         try: os.remove(JSON_REPORT); os.remove(HTML_REPORT)
         except: pass
@@ -144,6 +147,12 @@ def run_scanning_phase():
 
     if not os.path.exists(JSON_REPORT): Debugger.error("No report generated!"); sys.exit(1)
     Debugger.success(f"Report saved: {JSON_REPORT}")
+
+    # Nhắc nhở về OpenVAS (vì tool này chạy ngoài)
+    print(f"\n{C.YELLOW}⚠️  IMPORTANT NOTE FOR OPENVAS:{C.END}")
+    print("   Please run OpenVAS manually and save the XML report to:")
+    print(f"   👉 {C.BOLD}data/raw/openvas_scanme_report.xml{C.END}")
+    
     return url
 
 # ============== PHASE 2: PROCESSING ==============
@@ -170,70 +179,120 @@ def run_processing_phase():
     
     Debugger.success("Processing Complete.")
 
-# ============== PHASE 3: AGENT BRIDGE (INFINITY PROMPT) ==============
+# ============== PHASE 3: AGENT BRIDGE (HEURISTIC AUDITOR) ==============
 def run_bridge_phase(target_url, missing_tools=[]):
     Debugger.step("PHASE 3: AGENT HANDOFF")
     
+    # 1. Kiểm tra môi trường (Tool Check)
+    tools_status = {
+        "nuclei": shutil.which("nuclei") is not None,
+        "sqlmap": shutil.which("sqlmap") is not None,
+        "wpscan": shutil.which("wpscan") is not None,
+        "nmap": shutil.which("nmap") is not None
+    }
+    
+    # Chạy script bridge
     py = get_python_exec()
     s_bridge = os.path.join("scripts", "antigravity_agent_bridge.py")
     s_export = os.path.join("scripts", "export_excel.py")
     
     run_cmd(f"\"{py}\" {s_bridge}")
     
-    # Tính toán đường dẫn Python cho Agent
     try:
         rel_py = os.path.relpath(py, os.getcwd())
         agent_py_cmd = f"./{rel_py}" if not rel_py.startswith("..") and os.name != 'nt' else py
     except: agent_py_cmd = py
 
-    # --- TẠO GHI CHÚ VỀ TOOL THIẾU ---
-    tool_warning = ""
-    if missing_tools:
-        tool_warning = f"WARNING: MISSING TOOLS ({', '.join(missing_tools)}). YOU MUST USE PYTHON SCRIPTS."
-
-    print("\n" + "="*65)
-    print(f"{C.HEADER}{C.BOLD}🚀  PIPELINE COMPLETED - INFINITY AGENT PROMPT READY  🚀{C.END}")
-    print("="*65)
+    # 2. IN PROMPT RA MÀN HÌNH
+    print("\n" + "="*70)
+    print(f"{C.HEADER}{C.BOLD}🚀  PIPELINE COMPLETED - HEURISTIC AUDITOR MODE READY  🚀{C.END}")
+    print("="*70)
     print(f"✅ Data ready at: data/output/vuln_validation_queue.csv")
+    print(f"✅ Context: Nuclei={tools_status['nuclei']}, SQLMap={tools_status['sqlmap']}, Nmap={tools_status['nmap']}")
     print(f"\n{C.YELLOW}👉 COPY THE PROMPT BELOW TO ANTIGRAVITY IDE:{C.END}")
     
-    # --- PROMPT VÔ CỰC (INFINITY PROMPT) ---
     print(f"{C.CYAN}--------------------------------------------------{C.END}")
-    print(f"You are an Elite Security Research Agent. Target: {target_url}")
-    print(f"Mission: Verify findings in 'data/output/vuln_validation_queue.csv' autonomously.")
     
-    if tool_warning:
-        print(f"{C.RED}{C.BOLD}{tool_warning}{C.END}")
+    # --- BẮT ĐẦU PROMPT ---
+    print(f"You are an Elite Security Audit Engine.")
+    print(f"TARGET INPUT: {target_url}")
+    print(f"MISSION: Verify EVERY finding in 'data/output/vuln_validation_queue.csv' with 100% COMPLETENESS.")
+    print(f"TOOL CONTEXT: Nuclei={tools_status['nuclei']}, SQLMap={tools_status['sqlmap']}, WPScan={tools_status['wpscan']}, Nmap={tools_status['nmap']}")
 
-    print("\nEXECUTION FRAMEWORK (The OODA Loop):")
-    print("1. OBSERVE (Input): Read the CSV. Identify 'finding_name', 'cve', and 'url_or_port'.")
+    print("\n# --- CORE PHILOSOPHY (SLOW, STEADY, SMART) ---")
+    print("1. **SEQUENTIAL PROCESSING**: Process the queue strictly one-by-one. No multi-threading (to ensure stability).")
+    print("2. **TOOL DISCIPLINE**: Use exact flags defined below. If a tool is missing -> You MUST generate a Native Python function as fallback.")
+    print("3. **RESULT CLASSIFICATION**: You MUST use these exact statuses:")
+    print("   - 'CONFIRMED_PRESENT': Vulnerability or config exists.")
+    print("   - 'REPRODUCED': Attack condition observed (e.g., SQLi/XSS).")
+    print("   - 'CHECKED_NO_EXPLOIT': Tested safely, not vulnerable.")
+    print("   - 'NOT_REPRODUCED': Condition could not be observed.")
+    print("   - 'ERROR': Tool failure.")
+
+    print("\n# --- THE DECISION MATRIX (6 LAYERS OF DEFENSE) ---")
+
+    print("\n[LAYER 1] THE SNIPER (Nuclei - For Known CVEs & Configs)")
+    print("   -> TRIGGER: Finding has 'CVE-xxxx' OR keywords (git, env, swagger, config, exposed).")
+    print(f"   -> CHECK: If `Nuclei` is installed (Current: {tools_status['nuclei']}).")
+    print("   -> COMMAND: `nuclei -u {{TARGET_URL}} -id [CVE_ID] -silent` (if CVE) OR `nuclei -u {{TARGET_URL}} -tags [keyword] -silent`.")
+    print("   -> RESULT: If output found -> 'CONFIRMED_PRESENT'. Else -> Layer 3.")
+
+    print("\n[LAYER 2] THE HEAVY ARTILLERY (Injection & CMS)")
+    print("   -> TRIGGER: Keywords 'SQL', 'Injection', 'WordPress', 'Joomla'.")
+    print(f"   -> CHECK: If `sqlmap` or `wpscan` is installed.")
+    print("   -> SQLMAP FLAGS: `sqlmap -u {{TARGET_URL}} --batch --random-agent --level 1 --risk 1`")
+    print("   -> WPSCAN FLAGS: `wpscan --url {{TARGET_URL}} --no-update --enumerate p`")
+    print("   -> RESULT: If vulnerable -> 'REPRODUCED'. Else -> 'CHECKED_NO_EXPLOIT'.")
+    print("   -> FALLBACK: Write Python `requests` function to inject payloads (`' OR 1=1`, `<script>`) and analyze response diff.")
+
+    print("\n[LAYER 3] THE WEB SURGEON (Native Python - Headers & Logic)")
+    print("   -> TRIGGER: ZAP findings (CSP, Cache, HSTS, 403, Path Traversal, User-Agent, Cookie).")
+    print("   -> ACTION: Write CUSTOM PYTHON CODE using `requests`. use `{{TARGET_URL}}`.")
+    print("   -> LOGIC A (Headers): Inspect `response.headers`. Fail if key missing -> 'CONFIRMED_PRESENT'.")
+    print("   -> LOGIC B (403 Bypass): Try headers `{'X-Forwarded-For': '127.0.0.1'}`. If 200 OK -> 'REPRODUCED'.")
+    print("   -> LOGIC C (Path Traversal): Request `{{TARGET_URL}}/../../etc/passwd` or `boot.ini`.")
+
+    print("\n[LAYER 4] THE INFRA ENGINEER (Nmap - Standard Infra)")
+    print("   -> TRIGGER: Keywords 'SSH', 'SSL', 'TLS', 'Apache', 'Nginx', 'EOL', 'Algorithm', 'Port'.")
+    print("   -> MANDATORY FLAGS: `nmap -sV -Pn -p [PORT] --script [SCRIPT] {{TARGET_HOST}}`")
+    print("   -> MAPPING: SSH=`ssh2-enum-algos`, SSL=`ssl-enum-ciphers`, EOL=`vulners`.")
+    print("   -> RESULT: If script output confirms issue -> 'CONFIRMED_PRESENT'.")
+
+    print("\n[LAYER 5] THE UNIVERSAL PROTOCOL ADAPTER (For \"The Unknown\")")
+    print("   -> CONTEXT: Findings that don't fit Layers 1-4 (e.g., \"Redis\", \"MongoDB\", \"Memcached\", \"Unknown Service\").")
+    print("   -> STRATEGY: DYNAMIC PYTHON SOCKET ANALYSIS.")
+    print("   -> INSTRUCTION:")
+    print("      1. Analyze 'finding_name' to identify the likely service/port (e.g., Redis -> 6379, Mongo -> 27017).")
+    print("      2. Write a Python function using `socket` to connect to that port on `{{TARGET_HOST}}`.")
+    print("      3. Send a generic command (e.g., `INFO\\r\\n` for Redis, or just wait for Banner).")
+    print("      4. IF connection successful AND banner received -> Mark 'CONFIRMED_PRESENT'.")
+
+    print("\n[LAYER 6] THE SAFETY NET (Last Resort)")
+    print("   -> CONTEXT: If absolutely no logic matches and protocol is unknown.")
+    print("   -> ACTION: Perform a TCP Connect Check using Python `socket` on the specific port.")
+    print("   -> LOGIC: If Connected -> Mark 'CHECKED_NO_EXPLOIT' (Service Active). If Refused -> Mark 'NOT_REPRODUCED'.")
+
+    print("\n# --- EXECUTION PLAN (ACT) ---")
+    print("WRITE a Python script 'scripts/verify_vulns.py' that:")
     
-    print(f"\n2. ORIENT (Classify & Plan): Apply this Logic Matrix:")
-    
-    print(f"   {C.CYAN}[TYPE A] CVE-BASED (e.g., RegreSSHion, Heartbleed){C.END}")
-    print("      -> STRATEGY: Use Nmap NSE scripts or known Exploit payloads.")
-    print("      -> COMMAND: nmap -sV -p [port] --script [vuln_id] [target]")
-    
-    print(f"   {C.CYAN}[TYPE B] WEB LOGIC (e.g., Bypass 403, Headers){C.END}")
-    print("      -> STRATEGY: Manipulate HTTP Headers (X-Forwarded-For, User-Agent).")
-    print("      -> COMMAND: curl -I -H 'X-Forwarded-For: 127.0.0.1' [url]")
-    
-    print(f"   {C.CYAN}[TYPE C] INFRASTRUCTURE (e.g., EOL OS, 'general/tcp'){C.END}")
-    print("      -> STRATEGY: OS Fingerprinting. If port is 'general', scan top ports.")
-    print("      -> COMMAND: nmap -O -sV --top-ports 100 [target_ip]")
-    
-    print(f"   {C.CYAN}[TYPE D] FALLBACK (No Tools / Logic Bugs){C.END}")
-    print("      -> STRATEGY: WRITE PYTHON CODE. Do not fail if CLI tools are missing.")
-    print("      -> ACTION: Use 'requests', 'socket' to simulate the check.")
-    
-    print("\n3. ACT (Execute): Run the command/script in the Terminal.")
-    
-    print("\n4. REPORT (Update CSV):")
-    print("   - 'agent_status': 'VERIFIED' | 'CHECKED' | 'ERROR'")
-    print("   - 'agent_command': The Command/Script used.")
-    print("   - 'agent_evidence': Capture the Output.")
-    
-    print(f"\n5. FINISH: Save CSV & Run '{agent_py_cmd} {s_export}'")
+    # --- PHẦN CHUẨN HÓA URL (CRITICAL) ---
+    print(f"1. **GLOBAL TARGET & NORMALIZATION**:")
+    print(f"   - Input Target: '{target_url}'")
+    print("   - You MUST implement URL normalization at the start of the script:")
+    print("     - `TARGET_URL`: Must start with 'http://' or 'https://' (Use for Web Tools/Requests).")
+    print("     - `TARGET_HOST`: Must be IP or Domain ONLY (Strip 'http://', Use for Nmap/Socket).")
+    print("     - Example: If input is 'http://scanme.nmap.org', then TARGET_HOST='scanme.nmap.org'.")
+
+    print("2. **STRICT LOOP**: `for index, row in df.iterrows():`")
+    print("3. **INTELLIGENT PARSER**:")
+    print("   - Inside the loop, write a Python function `analyze_row(row)` that implements the 6 Layers above.")
+    print("   - Use `if/elif` logic based on `row['finding_name']` and `row['description']`.")
+    print("4. **ERROR PROOFING**: Wrap ONLY the verification logic in `try...except`. If error, Log it and `continue`.")
+    print("5. **PERSISTENCE**: Save CSV after **EVERY SINGLE ROW**.")
+    print("6. **EVIDENCE**: You MUST capture the FULL STDOUT or HTTP RESPONSE BODY in the 'agent_evidence' column.")
+
+    print("\nFINALLY: Run the script.")
+    print(f"7. FINISH: Run '{agent_py_cmd} {s_export}'")
     print(f"{C.CYAN}--------------------------------------------------{C.END}")
 
 def main():
@@ -243,7 +302,7 @@ def main():
     # Kiểm tra Tool ngay từ đầu
     missing_tools = check_external_tools()
 
-    print(f"{C.HEADER}{C.BOLD}🛡️   SECURITY PIPELINE V11 (INFINITY)   🛡️{C.END}")
+    print(f"{C.HEADER}{C.BOLD}🛡️   SECURITY PIPELINE V10 (FINAL)   🛡️{C.END}")
     
     try:
         while True:
@@ -251,8 +310,9 @@ def main():
             c = input(f"👉 Option: ").strip()
             if c == '1':
                 u = run_scanning_phase()
-                run_processing_phase()
-                run_bridge_phase(u, missing_tools)
+                if u:
+                    run_processing_phase()
+                    run_bridge_phase(u, missing_tools)
                 break
             elif c == '2':
                 u = input("👉 Target URL: ").strip()
