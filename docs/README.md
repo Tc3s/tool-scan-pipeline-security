@@ -215,11 +215,58 @@ Trường chính:
 
 ## 8. Trạng thái xác thực (Agent status codes)
 
-Các trạng thái dưới đây **khớp trực tiếp 13. License & Credits
+Các trạng thái dưới đây **khớp trực tiếp với output report của code**:
+
+- `CONFIRMED_PRESENT` — Lỗ hổng/cấu hình được xác nhận tồn tại (evidence rõ ràng: banner, header, version, response).
+- `REPRODUCED` — Đã tái hiện thành công kịch bản tấn công (ví dụ: SQLi payload thành công, bypass 403).
+- `CHECKED_NO_EXPLOIT` — Đã kiểm tra kỹ, dịch vụ tồn tại nhưng không khai thác được.
+- `NOT_REPRODUCED` — Không thể tái hiện điều kiện lỗi hoặc không kết nối được.
+- `ERROR` — Tool lỗi hoặc exception; Agent ghi log nhưng **pipeline không dừng**.
+
+---
+
+## 9. Mapping MITRE & Risk Scoring
+
+- `mapping/attack_mapping_rules.yml` chứa luật ánh xạ (CWE → MITRE ATT&CK).
+- `mapping/risk_weights.yml` cho trọng số: CVSS, asset_value, exploitability, public_exploit_exists, business_impact.
+
+Risk engine tính điểm tổng hợp và gán Priority:
+- P1: score ≥ `threshold_critical`
+- P2: score ≥ `threshold_high`
+- P3: medium
+- P4: info
+
+(Các threshold được cấu hình trong `mapping/risk_weights.yml` hoặc settings của pipeline.)
+
+---
+
+## 10. Best practices & Lưu ý vận hành
+
+- **Chỉ quét hệ thống được phép** — tuân thủ pháp luật & chính sách công ty.
+- **OpenVAS feed sync** có thể mất thời gian; giữ Docker volumes để tiết kiệm thời gian sync.
+- Thử nghiệm Agent trên môi trường lab trước khi bật full automation trên production.
+- Giới hạn tốc độ/parallelism của Agent để tránh làm gián đoạn dịch vụ mục tiêu.
+- Ghi log chi tiết, enable audit trails cho mọi action Agent thực hiện.
+
+---
+
+## 11. Troubleshooting — Vấn đề thường gặp
+
+- **OpenVAS thiếu dữ liệu/không hiện lỗi chi tiết** → kiểm tra logs `gvmd` & chờ SCAP/CERT sync.
+- **Agent không tìm thấy tool (nuclei/sqlmap)** → Agent sẽ fallback sang Python native; tuy nhiên chức năng có thể chậm hơn.
+- **Docker permission errors** → chạy Docker với user có quyền hoặc thêm `sudo`.
+- **Pipeline crash khi xử lý file lớn** → bật chế độ streaming/yield, chunk processing trong parser.
+
+---
+
+
+
+
+
+## 12. License & Credits
 **Author:** Tc3s
 
 **License:** MIT
 
 ---
-
 
