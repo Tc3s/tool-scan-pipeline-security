@@ -1,240 +1,157 @@
-# 🛡️ Task 4: Automated Vulnerability Management Pipeline
+# 🛡️ Task 4 — Automated Vulnerability Management Pipeline
 
-> **"From Detection to Verification: A Closed-Loop Security Pipeline"**
->
-> *Hệ thống quản lý lỗ hổng bảo mật tự động: Hợp nhất dữ liệu scan đa nguồn, chuẩn hoá, map MITRE ATT&CK, tính điểm rủi ro và tự động xác thực bằng AI Agent.*
+**From Detection to Verification: A Closed-Loop Security Pipeline**
 
----
-
-## 🧠 1. Giới thiệu (Overview)
-
-Dự án này giải quyết bài toán **"Quá tải cảnh báo"** (Alert Fatigue) trong DevSecOps bằng cách xây dựng một **Vulnerability Management Pipeline** hoàn chỉnh.
-
-Thay vì chỉ đưa ra danh sách lỗ hổng thô, hệ thống thực hiện quy trình khép kín gồm:
-
-1. **Quét đa lớp** — Kết hợp DAST (ZAP) cho Web và Infrastructure Scan (OpenVAS) cho mạng/OS.
-2. **Làm giàu dữ liệu** — Ánh xạ lỗ hổng vào khung **MITRE ATT&CK**.
-3. **Xếp hạng thông minh** — Tính điểm rủi ro (Risk Scoring) dựa trên ngữ cảnh và độ nghiêm trọng.
-4. **Tự động xác thực (Antigravity Agent)** — Sử dụng Agent thông minh để kiểm tra lại lỗ hổng (Active Verification) mà không cần API Key trả phí, giúp loại bỏ False Positives.
+_Hệ thống quản lý lỗ hổng bảo mật tự động: hợp nhất dữ liệu scan (ZAP / OpenVAS), chuẩn hoá, ánh xạ MITRE ATT&CK, tính điểm rủi ro và tự động xác thực bằng Heuristic/Antigravity AI Agent._
 
 ---
 
-## ⚙️ 2. Tính năng chính (Key Features)
+## 1. Tổng quan (Overview)
 
-- 🎯 **Hybrid Scanning:** Tích hợp OWASP ZAP và OpenVAS (Greenbone).
-- 📊 **Unified Data Model:** Chuẩn hóa XML/JSON về CSV duy nhất.
-- 🧭 **MITRE ATT&CK Mapping:** Tự động gán Tactic/Technique (ví dụ: *T1189 - Drive-by Compromise*) dựa trên CWE/CVE.
-- 📈 **Smart Risk Scoring:** Phân loại ưu tiên P1 (Critical) → P4 (Info).
-- 🤖 **Antigravity Verification Agent (AI):**
-  - **Cơ chế:** dùng `googlesearch-python`, `requests`, `socket` thay vì API trả phí.
-  - **Adaptive:** chuyển đổi giữa CLI (`nmap`, `curl`) và Python (socket/requests) tuỳ môi trường.
-  - **Evidence-Based:** ghi lại bằng chứng xác thực (output) vào báo cáo.
-- 📄 **Professional Reporting:** Xuất Excel + dashboard trực quan.
+Mục tiêu: giảm **Alert Fatigue** trong DevSecOps bằng một pipeline khép kín — từ phát hiện (detection), làm giàu (enrichment), xếp hạng (risk scoring) đến **xác thực tự động** (active verification) trước khi tạo báo cáo cho team.
+
+Quy trình chính:
+
+1. **Detection** — OWASP ZAP (Web DAST) + OpenVAS / Greenbone (Infra/OS).
+2. **Parsing & Normalization** — XML/JSON → CSV chuẩn chung.
+3. **Enrichment** — ánh xạ CWE/CVE → MITRE ATT&CK, thêm ngữ cảnh (host, service, app).
+4. **Risk Scoring** — engine gán Priority (P1…P4) dựa trên trọng số cấu hình.
+5. **Verification** — Heuristic / Antigravity Agent chạy ma trận quyết định nhiều lớp, ghi lại evidence.
+6. **Reporting** — Excel + CSV + dashboard (tùy triển khai).
 
 ---
 
-## 🏗️ 3. Kiến trúc hệ thống (Architecture)
+## 2. Tính năng chính (Key Features)
+
+- **Hybrid Scanning**: nhận input ZAP JSON và OpenVAS XML.
+- **Unified Data Model**: chuẩn hóa mọi report về CSV trung gian để dễ xử lý/gộp.
+- **MITRE ATT&CK Mapping**: ánh xạ tự động tactic/technique dựa trên CWE/CVE/rule.
+- **Smart Risk Scoring**: configurable weights → Priority P1 (Critical) → P4 (Info).
+- **Heuristic Auditor / Antigravity Agent**:
+  - Áp dụng **Ma trận quyết định 6 lớp (6-Layer Decision Matrix)** để xác thực lỗ hổng một cách có hệ thống.
+  - **Layer 1 – Nuclei (Sniper):** Ưu tiên số một cho CVE và misconfiguration (tốc độ cao, chính xác).
+  - **Layer 2 – SQLMap / WPScan:** Dành cho SQL Injection và CMS-specific vulnerabilities.
+  - **Layer 3 – Native Python (Web Surgeon):** Xác thực logic web (headers, 403 bypass, traversal) bằng code Python do Agent sinh ra.
+  - **Layer 4 – Nmap (Infra Engineer):** Kiểm tra hạ tầng, version, SSL/SSH bằng Nmap/NSE.
+  - **Layer 5 – Protocol Adapter:** Phân tích dịch vụ đặc thù (Redis, Mongo, Memcached…) bằng socket Python.
+  - **Layer 6 – Safety Net:** TCP connect check khi không lớp nào phù hợp.
+  - Evidence-Based / Zero-Hallucination: chỉ xác nhận khi có output chứng thực.
+- **Export**: `vuln_attack_report.xlsx`, `vuln_attack_enriched.csv`, `vuln_validation_queue.csv`.
+
+---
+
+## 3. Cơ chế hoạt động của Agent — Ma trận quyết định 6 lớp
+
+Agent tuân thủ ma trận quyết định nhiều lớp nhằm đảm bảo tính chính xác, ưu tiên sử dụng công cụ chuyên dụng, và fallback an toàn khi công cụ không sẵn sàng.
+
+**Layer 1 — The Sniper (Nuclei)**
+
+Ưu tiên nếu template Nuclei khớp với CVE/misconfiguration → thực thi template để lấy evidence.
+
+**Layer 2 — Heavy Artillery (SQLMap / WPScan)**
+
+Dành cho SQLi, CMS-specific checks.
+
+**Layer 3 — The Web Surgeon (Native Python)**
+
+Xử lý logic web (custom payload, header manipulation, path traversal) bằng script Python do Agent sinh hoặc tận dụng module sẵn có.
+
+**Layer 4 — Infra Engineer (Nmap / NSE)**
+
+Xác thực lỗi hạ tầng (version/ssl/ssh/ports) bằng Nmap scripts để lấy banner/phiên bản.
+
+**Layer 5 — Protocol Adapter (Dynamic Socket)**
+
+Kết nối dịch vụ đặc thù (Redis, Memcached, Mongo...) bằng socket để lấy banner/đầu mối.
+
+**Layer 6 — Safety Net (TCP Connect Check)**
+
+Nếu mọi thứ không khớp, kiểm tra kết nối cơ bản (tcp connect) để xác định trạng thái dịch vụ.
+
+**Trạng thái trả về của mỗi lớp**: `CONFIRMED_PRESENT`, `REPRODUCED`, `CHECKED_NO_EXPLOIT`, `NOT_REPRODUCED`, `ERROR`.
+Agent chỉ xác nhận khi evidence thỏa điều kiện (pattern, response code, banner, dump, v.v.). Trạng thái được chuẩn hóa theo output của Agent (xem mục 8).
+
+---
+
+## 4. Kiến trúc (Architecture)
 
 ```mermaid
 graph TD
-  subgraph "Phase 1: Detection"
-    ZAP[OWASP ZAP Docker]
-    OPV[OpenVAS Greenbone]
+  subgraph Detection
+    ZAP[OWASP ZAP Docker (DAST)]
+    GVM[OpenVAS / Greenbone (Infra)]
   end
 
-  subgraph "Phase 2: Processing"
-    P1[Parsers: XML/JSON -> CSV]
-    P2[Merge & Deduplicate]
-    P3[MITRE ATT&CK Mapping]
-    P4[Risk Scoring Engine]
+  subgraph Processing
+    PARSERS[Parsers: XML/JSON -> CSV]
+    MERGE[Merge & Deduplicate]
+    MAP[MITRE ATT&CK Mapping]
+    SCORE[Risk Scoring Engine]
   end
 
-  subgraph "Phase 3: Verification"
-    AI[🤖 Antigravity Agent]
-    LOGIC{Tool Check}
-    CLI[Run CLI: nmap/curl]
-    PY[Run Python: socket/requests]
+  subgraph Verification
+    AGENT[Heuristic / Antigravity Agent]
+    DECISION[6-Layer Decision Matrix]
+    TOOLS[Nuclei / SQLMap / Nmap / Python / Sockets]
   end
 
-  ZAP --> P1
-  OPV --> P1
-  P1 --> P2 --> P3 --> P4
-  P4 --> AI
-  AI --> LOGIC
-  LOGIC -->|Available| CLI
-  LOGIC -->|Missing| PY
-  CLI --> RESULT
-  PY --> RESULT
-  RESULT --> XLS[Final Report .xlsx]
+  ZAP --> PARSERS
+  GVM --> PARSERS
+  PARSERS --> MERGE --> MAP --> SCORE --> AGENT
+  AGENT --> DECISION --> TOOLS --> RESULT
+  RESULT --> REPORT[Final Report .xlsx / .csv]
 ```
 
 ---
 
-## 🗂️ 4. Cấu trúc thư mục (Project Structure)
+## 5. Cấu trúc thư mục (Project structure)
 
 ```
 task4-attack-vuln-mgmt/
 ├── data/
-│   ├── raw/                # Input: openvas_report.xml, zap_report.json
-│   ├── normalized/         # Intermediate CSVs
-│   └── output/             # Final: vuln_attack_report.xlsx
+│   ├── raw/                # input: openvas_report.xml, zap_report.json
+│   ├── normalized/         # intermediate CSVs
+│   └── output/             # vuln_attack_report.xlsx, vuln_validation_queue.csv
 ├── mapping/
-│   ├── attack_mapping_rules.yml  # Luật gán MITRE ATT&CK
-│   └── risk_weights.yml          # Trọng số tính điểm Risk
+│   ├── attack_mapping_rules.yml  # Luật mapping MITRE ATT&CK
+│   └── risk_weights.yml          # Trọng số tính Risk
 ├── scripts/
-│   ├── run_pipeline.py # MASTER SCRIPT
-│   ├── antigravity_agent_bridge.py # Agent Logic (Xác thực)
-│   ├── parse_zap.py              # Xử lý báo cáo ZAP
-│   ├── parse_openvas.py          # Xử lý báo cáo OpenVAS
-│   ├── merge_vulns.py            # Gộp dữ liệu
-│   ├── apply_attack_mapping.py   # Mapping MITRE
-│   ├── calculate_risk_priority.py# Tính điểm Risk
-│   └── export_excel.py           # Xuất báo cáo Excel
+│   ├── run_pipeline.py            # MASTER script: orchestrator + UI menu
+│   ├── antigravity_agent_bridge.py# Agent core / scheduler
+│   ├── verify_vulns.py            # [AUTO-GENERATED] scripts per vuln (Agent)
+│   ├── parse_zap.py               # parser ZAP -> CSV
+│   ├── parse_openvas.py           # parser OpenVAS -> CSV
+│   ├── merge_vulns.py             # dedupe & merge
+│   ├── apply_attack_mapping.py    # MITRE mapping
+│   ├── calculate_risk_priority.py # Risk scoring
+│   └── export_excel.py            # Export XLSX
 ├── requirements.txt
 └── README.md
 ```
 
 ---
 
-## 🛠️ 5. Cài đặt & Sử dụng (Quick Start)
+## 6. Yêu cầu & Cài đặt nhanh (Requirements & Quick start)
 
-### Bước 1 — Chuẩn bị môi trường Python
+**Yêu cầu hệ thống**
+
+- OS: Linux (Ubuntu / Kali) hoặc WSL2 trên Windows
+- Python 3.10+
+- Docker & Docker Compose (để chạy ZAP/OpenVAS container)
+- Khuyến nghị: `nmap`, `nuclei`, `sqlmap`, `docker` trên host để Agent chạy đầy đủ năng lực
+
+**Thiết lập môi trường Python**
 
 ```bash
-# Tạo môi trường ảo
+# Tại thư mục project
 python3 -m venv venv
-source venv/bin/activate
+source venv/bin/activate    # Linux/macOS
+# venv\Scripts\activate   # Windows
 
-# Cài đặt thư viện
 pip install -r requirements.txt
 ```
 
-### Bước 2 — Chuẩn bị Scanner (Docker)
-
-Xem phần hướng dẫn setup ZAP và OpenVAS ở phía dưới.
-
-### Bước 3 — Chạy Pipeline
-
-```bash
-python3 scripts/run_pipeline.py
-```
-
-**Menu tùy chọn (trong script):**
-
-- 🚀 *New Scan & Process* — Tự động gọi ZAP scan mới và chạy pipeline.
-- 📂 *Process Existing Data* — Xử lý file report có sẵn trong `data/raw/` (OpenVAS XML hoặc ZAP JSON).
-
----
-
-## 📊 6. Kết quả đầu ra (Outputs)
-
-Các file sẽ xuất ra thư mục `data/output/`:
-
-- `vuln_attack_report.xlsx` — Bảng tổng hợp ưu tiên (P1 đỏ → P4 xanh).
-- `vuln_attack_enriched.csv` — Dữ liệu thô enrich (dùng cho SIEM).
-
-Trường quan trọng trong báo cáo:
-
-- **Priority:** P1, P2, P3, P4
-- **Agent Status:** VERIFIED, WAITING
-- **Evidence:** Output thực tế từ quá trình verify
-
-**Author:** Tc3s — **License:** MIT
-
----
-
-# PHẦN 2 — HƯỚNG DẪN SETUP ZAP VÀ OPENVAS (Chi tiết)
-
-Dưới đây là quy trình cài đặt chuẩn cho 2 công cụ.
-
-### 1️⃣ Yêu cầu tiên quyết
-
-- OS: Linux (Ubuntu/Kali) hoặc Windows (WSL2)
-- Docker & Docker Compose
-
-### 2️⃣ Cài đặt OpenVAS (Greenbone Community Edition)
-
-*OpenVAS dùng để quét hạ tầng (Server, Network).*
-
-**Bước 1 — Tạo thư mục & tải cấu hình**
-
-```bash
-# Tạo thư mục làm việc (tránh làm rác Home)
-export DOWNLOAD_DIR=$HOME/greenbone-community-container
-mkdir -p $DOWNLOAD_DIR
-cd $DOWNLOAD_DIR
-
-# Tải file docker-compose chính thức
-curl -f -L https://greenbone.github.io/docs/latest/22.4/docker-compose.yml -o docker-compose.yml
-```
-
-**Bước 2 — Kéo và chạy container**
-
-```bash
-# Pull images (mất ~10–20 phút tùy mạng)
-docker compose -f docker-compose.yml pull
-
-# Start services (background)
-docker compose -f docker-compose.yml up -d
-```
-
-**Bước 3 — Đồng bộ dữ liệu (Feed Sync)** OpenVAS cần đồng bộ NVT / SCAP / CERT để hoạt động chính xác. Kiểm tra log:
-
-```bash
-docker compose logs -f gvmd
-```
-
-> Dấu hiệu thành công: log hiển thị thông báo như `Updating SCAP info succeeded` hoặc `Updating CERT info succeeded`.
-
-**Bước 4 — Đổi mật khẩu admin**
-
-```bash
-# Thay bằng password bạn muốn
-docker compose -f docker-compose.yml exec -u gvmd gvmd gvmd --user=admin --new-password="admin"
-```
-
-Truy cập UI: `http://localhost:9392` (User: `admin` / Pass: `admin` nếu bạn đổi như trên).
-
-**Bước 5 — Lấy report XML cho pipeline**
-
-- Sau khi scan, vào *Scans → Reports* trong GSA (Web UI).
-- Chọn report → Download → chọn định dạng **XML**.
-- Copy file XML vào `task4-attack-vuln-mgmt/data/raw/`.
-
-### 3️⃣ Cài đặt OWASP ZAP (Web Scanner)
-
-ZAP dùng để quét ứng dụng web (DAST).
-
-**Bước 1 — Kéo image ZAP**
-
-```bash
-docker pull ghcr.io/zaproxy/zaproxy:stable
-```
-
-**Bước 2 — Chạy scan thủ công (ví dụ)**
-
-> Script đã có sẵn lệnh gọi ZAP, nhưng để test thủ công:
-
-```bash
-# Từ thư mục gốc project
-# Scan mục tiêu http://example.com
-
-docker run --rm -v $(pwd)/data/raw:/zap/wrk/:rw \
-  ghcr.io/zaproxy/zaproxy:stable zap-baseline.py \
-  -t http://example.com \
-  -r zap_report.html \
-  -J zap_report.json
-```
-
-Giải thích:
-
-- `-v $(pwd)/data/raw:/zap/wrk/:rw` → mount thư mục để lấy report
-- `-J zap_report.json` → xuất JSON (pipeline cần file này)
-- `-r zap_report.html` → xuất HTML cho người đọc
-
-### 4️⃣ Gợi ý cho `requirements.txt`
-
-Để hỗ trợ đầy đủ các script (bao gồm Antigravity Agent), file `requirements.txt` khuyến nghị:
+**Gợi ý nội dung `requirements.txt`**
 
 ```
 pandas
@@ -243,18 +160,57 @@ requests
 xlsxwriter
 pyyaml
 lxml
-googlesearch-python
+openpyxl
 ```
 
+**Chuẩn bị Scanner (Docker)**
+
+- OpenVAS (Greenbone): tải `docker-compose.yml` chính thức của Greenbone, `docker compose up -d`, chờ feed sync.
+- OWASP ZAP: `ghcr.io/zaproxy/zaproxy:stable` — dùng `zap-baseline.py` hoặc API để chạy scan.
+
+Ví dụ chạy ZAP (container):
+
+```bash
+docker run --rm -v $(pwd)/data/raw:/zap/wrk/:rw \
+  ghcr.io/zaproxy/zaproxy:stable zap-baseline.py \
+  -t http://example.com \
+  -r zap_report.html \
+  -J zap_report.json
+```
+
+**Chạy pipeline**
+
+```bash
+python3 scripts/run_pipeline.py
+```
+
+Chế độ trong script:
+- `Start Scan` — gọi Docker ZAP (scan mới) -> process -> verify
+- `Process Only` — xử lý file report có sẵn (data/raw) -> verify
+- `Verify Only` — chạy agent trên CSV normalized
+
 ---
 
-## 🔁 Lưu ý quan trọng
+## 7. Outputs & Trường dữ liệu quan trọng
 
-- **Không bỏ sót** việc chờ feed OpenVAS sync — nếu chưa sync, kết quả scan thiếu thông tin.
-- **Chỉ scan hệ thống được phép** (lab, VM nội bộ). Quét ngoài phạm vi là hành vi bất hợp pháp.
-- Giữ **Docker volumes** nếu bạn muốn cache feed và tiết kiệm thời gian sync sau này.
+Các file xuất tại `data/output/`:
+
+- `vuln_attack_report.xlsx` — Báo cáo cuối cùng: Priority, MITRE ATT&CK, Agent Status, Evidence.
+- `vuln_validation_queue.csv` — Hàng đợi xác thực chi tiết (mỗi lỗ hổng = 1 task của Agent).
+- `vuln_attack_enriched.csv` — Dataset đã enrich, dùng cho SIEM / phân tích thêm.
+
+Trường chính:
+`id`, `host`, `port`, `service`, `cve`, `cwe`, `attack_tactic`, `attack_technique`, `priority` (P1–P4), `agent_status`, `evidence`, `timestamp`
 
 ---
 
+## 8. Trạng thái xác thực (Agent status codes)
+
+Các trạng thái dưới đây **khớp trực tiếp 13. License & Credits
+**Author:** Tc3s
+
+**License:** MIT
+
+---
 
 
