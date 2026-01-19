@@ -77,29 +77,38 @@ Agent chỉ xác nhận khi evidence thỏa điều kiện (pattern, response co
 
 ```mermaid
 graph TD
-  subgraph Detection
-    ZAP[OWASP ZAP Docker (DAST)]
-    GVM[OpenVAS / Greenbone (Infra)]
-  end
 
-  subgraph Processing
-    PARSERS[Parsers: XML/JSON -> CSV]
-    MERGE[Merge & Deduplicate]
-    MAP[MITRE ATT&CK Mapping]
-    SCORE[Risk Scoring Engine]
-  end
 
-  subgraph Verification
-    AGENT[Heuristic / Antigravity Agent]
-    DECISION[6-Layer Decision Matrix]
-    TOOLS[Nuclei / SQLMap / Nmap / Python / Sockets]
-  end
+subgraph Detection
+ZAP[OWASP ZAP Docker]
+GVM[OpenVAS / Greenbone]
+end
 
-  ZAP --> PARSERS
-  GVM --> PARSERS
-  PARSERS --> MERGE --> MAP --> SCORE --> AGENT
-  AGENT --> DECISION --> TOOLS --> RESULT
-  RESULT --> REPORT[Final Report .xlsx / .csv]
+
+subgraph Processing
+PARSERS[Parsers XML/JSON to CSV]
+MERGE[Merge and Deduplicate]
+MAP[MITRE ATT&CK Mapping]
+SCORE[Risk Scoring Engine]
+end
+
+
+subgraph Verification
+AGENT[Heuristic / Antigravity Agent]
+DECISION[6-Layer Decision Matrix]
+TOOLS[Nuclei / SQLMap / Nmap / Python / Sockets]
+end
+
+
+ZAP --> PARSERS
+GVM --> PARSERS
+PARSERS --> MERGE
+MERGE --> MAP
+MAP --> SCORE
+SCORE --> AGENT
+AGENT --> DECISION
+DECISION --> TOOLS
+TOOLS --> REPORT[Final Report XLSX / CSV]
 ```
 
 ---
