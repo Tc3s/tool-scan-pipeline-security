@@ -24,6 +24,7 @@ data/output/*
 *.html
 *.xml
 *.json
+.~lock.*#
 
 # --- 4. GIỮ LẠI CẤU TRÚC THƯ MỤC (Exception Rules) ---
 # Dùng dấu '!' để bảo Git: "Đừng ignore file .gitkeep"
