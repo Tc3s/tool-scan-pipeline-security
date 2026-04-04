@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-import xml.etree.ElementTree as ET
+try:
+    import defusedxml.ElementTree as ET  # XXE protection
+except ImportError:
+    import xml.etree.ElementTree as ET
+    print("⚠️  defusedxml not installed — using standard XML parser (XXE risk!)")
+    print("   Install: pip install defusedxml")
 import csv
 from datetime import datetime
 
@@ -105,6 +110,25 @@ def parse_openvas_xml(xml_path, output_csv):
 
 if __name__ == '__main__':
     import sys
-    xml_file = sys.argv[1] if len(sys.argv) > 1 else 'data/raw/openvas_scanme_report.xml'
-    output_file = sys.argv[2] if len(sys.argv) > 2 else 'data/normalized/openvas_findings.csv'
+    import glob
+    import os
+    
+    # Tìm thư mục gốc của project (script nằm trong scripts/)
+    PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    DATA_DIR = os.path.join(PROJECT_ROOT, "data")
+    
+    if len(sys.argv) > 1:
+        xml_file = sys.argv[1]
+    else:
+        # Auto-detect: tìm file XML mới nhất trong data/raw/
+        raw_dir = os.path.join(DATA_DIR, 'raw')
+        xml_files = glob.glob(os.path.join(raw_dir, '*.xml'))
+        if xml_files:
+            xml_file = max(xml_files, key=os.path.getmtime)
+            print(f"ℹ️  Auto-detected: {xml_file}")
+        else:
+            print(f"❌ Không tìm thấy file XML nào trong {raw_dir}")
+            sys.exit(1)
+    
+    output_file = sys.argv[2] if len(sys.argv) > 2 else os.path.join(DATA_DIR, 'normalized', 'openvas_findings.csv')
     parse_openvas_xml(xml_file, output_file)

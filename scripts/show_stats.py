@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Quick stats viewer for enriched findings"""
 import csv
+import os
 from collections import Counter
 
 def show_stats(csv_file):
@@ -42,4 +43,6 @@ def show_stats(csv_file):
             print(f"        → {f['reason'][:80]}")
 
 if __name__ == '__main__':
-    show_stats('data/output/vuln_attack_enriched.csv')
+    PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    show_stats(os.path.join(PROJECT_ROOT, 'data', 'output', 'vuln_attack_enriched.csv'))
+

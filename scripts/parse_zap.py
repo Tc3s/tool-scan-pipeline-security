@@ -286,11 +286,15 @@ def parse_zap(json_path, output_csv):
 
 # ============== ENTRY POINT ==============
 if __name__ == '__main__':
+    # Tìm thư mục gốc của project (script nằm trong scripts/)
+    PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    DATA_DIR = os.path.join(PROJECT_ROOT, "data")
+    
     if len(sys.argv) > 1:
         json_file = sys.argv[1]
     else:
-        json_file = 'data/raw/zap_report.json'
+        json_file = os.path.join(DATA_DIR, 'raw', 'zap_report.json')
     
-    output_file = 'data/normalized/zap_findings.csv'
+    output_file = os.path.join(DATA_DIR, 'normalized', 'zap_findings.csv')
     
     parse_zap(json_file, output_file)

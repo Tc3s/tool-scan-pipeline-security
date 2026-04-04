@@ -302,9 +302,14 @@ def process_findings(input_csv, rules_file, output_csv):
 
 # ============== ENTRY POINT ==============
 if __name__ == '__main__':
-    input_file = 'data/output/vuln_raw.csv'
-    rules_file = 'mapping/attack_mapping_rules.yml'
-    output_file = 'data/output/vuln_attack_mapped.csv'
+    # Tìm thư mục gốc của project (script nằm trong scripts/)
+    PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    DATA_DIR = os.path.join(PROJECT_ROOT, "data")
+    MAPPING_DIR = os.path.join(PROJECT_ROOT, "mapping")
+    
+    input_file = os.path.join(DATA_DIR, 'output', 'vuln_raw.csv')
+    rules_file = os.path.join(MAPPING_DIR, 'attack_mapping_rules.yml')
+    output_file = os.path.join(DATA_DIR, 'output', 'vuln_attack_mapped.csv')
     
     # Validate input files exist
     if not Path(input_file).exists():
