@@ -28,7 +28,8 @@ echo -e "\n${GREEN}[1/8] Updating system packages and installing Docker...${NC}"
 sudo apt update && sudo apt upgrade -y
 sudo apt install -y docker.io docker-compose-v2 python3 python3-pip python3-venv \
     nmap sqlmap nikto curl git unzip ruby-full \
-    libxml2-dev libxslt1-dev python3-dev
+    libxml2-dev libxslt1-dev python3-dev \
+    build-essential libcurl4-openssl-dev zlib1g-dev
 
 # Ensure user is in docker group (optional but helpful)
 if ! groups $USER | grep -q "\bdocker\b"; then
