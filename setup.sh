@@ -155,6 +155,14 @@ echo -e "   Pre-pulling OWASP ZAP Docker image (Stable)..."
 # Pull via sudo or user if in docker group
 sudo docker pull ghcr.io/zaproxy/zaproxy:stable
 
+echo -e "   Pre-pulling OpenVAS (Greenbone) Docker images from compose.yml..."
+if [ -f "compose.yml" ]; then
+    sudo docker compose -f compose.yml pull
+    echo -e "   ✅ OpenVAS images downloaded."
+else
+    echo -e "   ⚠️  compose.yml NOT found, skipping OpenVAS pull."
+fi
+
 echo -e "   ✅ All tools initialized successfully."
 
 echo -e "\n${BLUE}====================================================${NC}"
@@ -163,5 +171,6 @@ echo -e "${BLUE}====================================================${NC}"
 echo -e "\nTo start the pipeline, run:"
 echo -e "   ${YELLOW}source venv/bin/activate${NC}"
 echo -e "   ${YELLOW}python3 scripts/run_pipeline.py${NC}"
-echo -e "\nOptional: OpenVAS must be set up manually using Greenbone docker-compose."
+echo -e "\nTo start OpenVAS (Greenbone) in the background, run:"
+echo -e "   ${CYAN}sudo docker compose -f compose.yml up -d${NC}"
 echo -e "${BLUE}====================================================${NC}\n"
