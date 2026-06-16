@@ -260,6 +260,13 @@ def run_scanning_phase():
         Debugger.error("Docker missing! Cannot run ZAP.")
         sys.exit(1)
 
+    # Pull ZAP Docker image to ensure it's available and up-to-date
+    Debugger.info(f"Checking/Pulling ZAP Docker image: {ZAP_IMAGE}")
+    try:
+        subprocess.run(["docker", "pull", ZAP_IMAGE], check=True)
+    except subprocess.CalledProcessError as e:
+        Debugger.warning(f"Failed to pull {ZAP_IMAGE}. Will attempt to use local cache if available.")
+
     print(f"\n{C.HEADER}--- TARGET CONFIG ---{C.END}")
     url = input(f"{C.BOLD}👉 Target URL (Default: http://scanme.nmap.org): {C.END}").strip() or "http://scanme.nmap.org"
     if not url.startswith("http"): url = "http://" + url
