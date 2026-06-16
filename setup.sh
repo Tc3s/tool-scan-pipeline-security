@@ -175,3 +175,7 @@ echo -e "   ${YELLOW}python3 scripts/run_pipeline.py${NC}"
 echo -e "\nTo start OpenVAS (Greenbone) in the background, run:"
 echo -e "   ${CYAN}sudo docker compose -f compose.yml up -d${NC}"
 echo -e "${BLUE}====================================================${NC}\n"
+
+# Reload group dynamically so the user doesn't have to logout
+echo -e "🔄 Nạp lại quyền Docker cho Terminal hiện tại..."
+exec newgrp docker
