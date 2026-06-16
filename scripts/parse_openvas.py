@@ -6,6 +6,7 @@ except ImportError:
     print("⚠️  defusedxml not installed — using standard XML parser (XXE risk!)")
     print("   Install: pip install defusedxml")
 import csv
+import os
 from datetime import datetime
 
 def parse_openvas_xml(xml_path, output_csv):

