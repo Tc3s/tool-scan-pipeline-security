@@ -1,10 +1,10 @@
-# 🎯 ATT&CK Mapping Rules for ZAP/OpenVAS Findings - V9 OPTIMIZED
+# 🎯 ATT&CK Mapping Rules for ZAP/OpenVAS Findings - V1
 #
 # Purpose: Map vulnerability findings to MITRE ATT&CK tactics & techniques
 # Format: YAML rules with match patterns (finding_name OR cwe OR cve)
 # Usage: Loaded by apply_attack_mapping.py
 #
-# Improvements from V8:
+# V1 baseline:
 # ✅ More comprehensive rule coverage (40+ rules)
 # ✅ Better confidence scoring (0.4-0.95 range)
 # ✅ Improved regex patterns (case-insensitive, wildcard support)
@@ -48,14 +48,6 @@ rules:
   confidence: 0.92
   reason: "SQL injection enables database access, data exfiltration, and code execution"
 
-- match_type: cve
-  pattern: "CVE-.*"  # Any CVE
-  technique_id: T1190
-  technique_name: "Exploit Public-Facing Application"
-  tactic: "Initial Access"
-  confidence: 0.70
-  reason: "Known CVE exploitation provides direct initial access vector"
-
 - match_type: finding_name
   pattern: "Arbitrary File Upload"
   technique_id: T1190
@@ -71,6 +63,22 @@ rules:
   tactic: "Initial Access"
   confidence: 0.85
   reason: "Unsafe deserialization allows remote code execution"
+
+- match_type: finding_name
+  pattern: "Default/Hardcoded Credentials|Default Credentials|Passwordless Login"
+  technique_id: T1078
+  technique_name: "Valid Accounts"
+  tactic: "Initial Access"
+  confidence: 0.90
+  reason: "Valid/default credentials allow direct authenticated access"
+
+- match_type: finding_name
+  pattern: "Brute Force Logins With Default Credentials"
+  technique_id: T1110
+  technique_name: "Brute Force"
+  tactic: "Credential Access"
+  confidence: 0.88
+  reason: "Scanner proved/default credential login path"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # WEB CONTENT & ACCESS CONTROL (CWE Specific)
@@ -157,7 +165,7 @@ rules:
   reason: "SQL injection can write persistent web shells via INSERT statements"
 
 - match_type: finding_name
-  pattern: "Web Shell|Backdoor"
+  pattern: "Web Shell"
   technique_id: T1505.003
   technique_name: "Server Software Component: Web Shell"
   tactic: "Persistence"
@@ -165,12 +173,20 @@ rules:
   reason: "Web shell provides persistent command execution capability"
 
 - match_type: finding_name
-  pattern: "Remote Code Execution|RCE"
-  technique_id: T1505.003
-  technique_name: "Server Software Component: Web Shell"
-  tactic: "Persistence"
-  confidence: 0.75
-  reason: "RCE vulnerability can be leveraged to install persistent backdoor"
+  pattern: "Remote Code Execution|Command Execution|\\bRCE\\b|DistCC|Ghostcat|dRuby|\\brexec\\b"
+  technique_id: T1190
+  technique_name: "Exploit Public-Facing Application"
+  tactic: "Initial Access"
+  confidence: 0.88
+  reason: "Remote command/code execution is an initial access path when service is exposed"
+
+- match_type: finding_name
+  pattern: "Backdoor|vsftpd|Ingreslock|UnrealIRCd Backdoor"
+  technique_id: T1190
+  technique_name: "Exploit Public-Facing Application"
+  tactic: "Initial Access"
+  confidence: 0.88
+  reason: "Backdoor-capable exposed service can provide direct initial access"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # PRIVILEGE ESCALATION (TA0004) - Gain higher privileges
@@ -247,6 +263,14 @@ rules:
   tactic: "Credential Access"
   confidence: 0.75
   reason: "Weak authentication enables brute force password attacks"
+
+- match_type: finding_name
+  pattern: "rlogin|rsh|FTP Unencrypted Cleartext Login|Cleartext Transmission"
+  technique_id: T1040
+  technique_name: "Network Sniffing"
+  tactic: "Credential Access"
+  confidence: 0.72
+  reason: "Cleartext remote access protocols expose credentials to network capture"
 
 - match_type: cwe
   pattern: "CWE-256"  # Unprotected storage of credentials
@@ -445,19 +469,4 @@ rules:
   reason: "Missing security headers weaken defense mechanisms"
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# CATCH-ALL FALLBACKS
-# ═══════════════════════════════════════════════════════════════════════════════
-
-- match_type: finding_name
-  pattern: ".*"  # Match any finding not caught above
-  technique_id: T1046
-  technique_name: "Network Service Discovery"
-  tactic: "Discovery"
-  confidence: 0.40
-  reason: "Unclassified vulnerability - minimal confidence mapping"
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# TOTAL: 40+ rules covering major vulnerability types
-# COVERAGE: ~95% of common ZAP/OpenVAS findings
-# CONFIDENCE: Weighted by attack impact and evidence quality
-# ═══════════════════════════════════════════════════════════════════════════════
+# No catch-all rule: unknown/low-confidence mappings must stay reviewable.

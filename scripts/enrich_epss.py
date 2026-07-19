@@ -5,7 +5,13 @@ Fetches EPSS (Exploit Prediction Scoring System) data from FIRST.org API
 """
 
 import requests
+import json
 from typing import Tuple
+
+try:
+    from scripts.schema_utils import extract_cves
+except ImportError:
+    from schema_utils import extract_cves
 
 EPSS_API_URL = "https://api.first.org/data/v1/epss"
 REQUEST_TIMEOUT = 5  # seconds
@@ -113,7 +119,38 @@ def get_epss_scores_batch(cve_ids: list, batch_size: int = 100) -> dict:
     return results
 
 
-def enrich_dataframe_with_epss(df, cve_column: str = "cve_id"):
+def summarize_epss_for_cves(cves: list, epss_results: dict) -> dict:
+    """Return max EPSS metadata for one finding's CVE list."""
+    cve_items = []
+    for cve in cves:
+        score, percentile = epss_results.get(cve.upper(), (0.0, 0.0))
+        cve_items.append({
+            "cve": cve.upper(),
+            "epss": float(score),
+            "percentile": float(percentile),
+        })
+
+    if not cve_items:
+        return {
+            "epss_score": 0.0,
+            "epss_percentile": 0.0,
+            "epss_source_cve": "",
+            "epss_all_json": "[]",
+            "epss_lookup_status": "NO_CVE",
+        }
+
+    best = max(cve_items, key=lambda item: item["epss"])
+    found_any = any(item["cve"] in epss_results for item in cve_items)
+    return {
+        "epss_score": best["epss"],
+        "epss_percentile": best["percentile"],
+        "epss_source_cve": best["cve"] if best["epss"] > 0 else "",
+        "epss_all_json": json.dumps(cve_items, ensure_ascii=False),
+        "epss_lookup_status": "FOUND" if found_any else "NO_DATA_OR_LOOKUP_FAILED",
+    }
+
+
+def enrich_dataframe_with_epss(df, cve_column: str = "cve"):
     """
     Bulk enrich a DataFrame with EPSS scores.
     
@@ -126,21 +163,22 @@ def enrich_dataframe_with_epss(df, cve_column: str = "cve_id"):
     """
     import pandas as pd
     
-    epss_scores = []
-    epss_percentiles = []
-    
-    for idx, row in df.iterrows():
-        cve_id = row.get(cve_column, "")
-        if pd.isna(cve_id) or not cve_id:
-            epss_scores.append(0.0)
-            epss_percentiles.append(0.0)
-        else:
-            score, pct = get_epss_score(str(cve_id))
-            epss_scores.append(score)
-            epss_percentiles.append(pct)
-    
-    df["epss_score"] = epss_scores
-    df["epss_percentile"] = epss_percentiles
+    row_cves = []
+    all_cves = []
+
+    for _, row in df.iterrows():
+        cves = extract_cves(row.get(cve_column, ""), row.get("cve_list", ""))
+        row_cves.append(cves)
+        all_cves.extend(cves)
+
+    epss_results = get_epss_scores_batch(all_cves)
+
+    summaries = [summarize_epss_for_cves(cves, epss_results) for cves in row_cves]
+    df["epss_score"] = [item["epss_score"] for item in summaries]
+    df["epss_percentile"] = [item["epss_percentile"] for item in summaries]
+    df["epss_source_cve"] = [item["epss_source_cve"] for item in summaries]
+    df["epss_all_json"] = [item["epss_all_json"] for item in summaries]
+    df["epss_lookup_status"] = [item["epss_lookup_status"] for item in summaries]
     
     return df
 

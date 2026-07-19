@@ -6,7 +6,7 @@
 Input:  data/normalized/zap_findings.csv (from parse_zap.py)
 Output: data/output/vuln_attack_mapped.csv
 
-Improvements from v8:
+V1 baseline:
 - ✅ Robust error handling
 - ✅ Progress indicator
 - ✅ Better CWE/CVE matching
@@ -16,12 +16,21 @@ Improvements from v8:
 """
 
 import csv
+import json
 import yaml
 import re
 import sys
 import os
 from pathlib import Path
 from datetime import datetime
+import pandas as pd
+
+try:
+    from scripts import runtime_context as rt
+    from scripts.schema_utils import extract_cves, normalize_dataframe_schema
+except ImportError:
+    import runtime_context as rt
+    from schema_utils import extract_cves, normalize_dataframe_schema
 
 # ============== LOGGING ==============
 class Logger:
@@ -79,28 +88,38 @@ def match_cwe(cwe, pattern):
     return pattern.upper() in cwe.upper()
 
 def match_cve(cve, pattern):
-    """Match CVE with pattern (prefix match or regex)"""
-    if not cve or not pattern:
+    """Match any CVE in a finding with pattern (prefix match or regex)."""
+    cves = extract_cves(cve)
+    if not cves or not pattern:
         return False
     try:
         if pattern.startswith('/') and pattern.endswith('/'):
             # Regex pattern
             regex = pattern[1:-1]
-            return bool(re.match(regex, cve, re.IGNORECASE))
+            return any(re.match(regex, cve_id, re.IGNORECASE) for cve_id in cves)
         else:
             # Simple prefix match
-            return cve.upper().startswith(pattern.upper())
+            return any(cve_id.upper().startswith(pattern.upper()) for cve_id in cves)
     except re.error:
         return False
 
 # ============== MAPPING ENGINE ==============
+def _is_catch_all(rule):
+    pattern = str(rule.get('pattern', '')).strip()
+    return pattern in {'.*', '^.*$', '.+'} and float(rule.get('confidence', 0) or 0) < 0.7
+
+
 def apply_mapping(finding, rules):
-    """Apply first matching rule to finding - returns standardized dict"""
+    """Apply all matching rules and return primary + JSON technique mappings."""
     finding_name = finding.get('finding_name', '')
     cwe = finding.get('cwe', '')
     cve = finding.get('cve', '')
-    
+    matches = []
+
     for rule in rules:
+        if _is_catch_all(rule):
+            continue
+
         match_type = rule.get('match_type', '').lower()
         pattern = rule.get('pattern', '')
         matched = False
@@ -113,21 +132,44 @@ def apply_mapping(finding, rules):
             matched = True
         
         if matched:
-            # Convert confidence to float
             try:
                 confidence = float(rule.get('confidence', 0.5))
             except (ValueError, TypeError):
                 confidence = 0.5
-            
-            return {
-                'attack_tactic': rule.get('tactic', 'Unknown').strip(),
-                'attack_technique_id': rule.get('technique_id', '').strip(),
-                'attack_technique_name': rule.get('technique_name', '').strip(),
-                'attack_confidence': confidence,
-                'mapping_method': 'rule',
+            matches.append({
+                'tactic': rule.get('tactic', 'Unknown').strip(),
+                'technique_id': rule.get('technique_id', '').strip(),
+                'technique_name': rule.get('technique_name', '').strip(),
+                'confidence': confidence,
                 'reason': rule.get('reason', 'Rule-based mapping').strip(),
-                'needs_review': confidence < 0.7  # Mark low-confidence for review
-            }
+                'match_type': match_type,
+                'pattern': pattern,
+            })
+
+    deduped = []
+    seen = set()
+    for item in sorted(matches, key=lambda m: m['confidence'], reverse=True):
+        key = item['technique_id'] or item['technique_name']
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+
+    if deduped:
+        primary = deduped[0]
+        max_confidence = primary['confidence']
+        return {
+            'attack_tactic': primary['tactic'],
+            'attack_technique_id': primary['technique_id'],
+            'attack_technique_name': primary['technique_name'],
+            'attack_confidence': max_confidence,
+            'attack_tactics_json': json.dumps(sorted({item['tactic'] for item in deduped}), ensure_ascii=False),
+            'attack_techniques_json': json.dumps(deduped, ensure_ascii=False),
+            'mapping_method': 'rule_multi' if len(deduped) > 1 else 'rule',
+            'mapping_type': 'heuristic_rule',
+            'reason': primary['reason'],
+            'needs_review': max_confidence < 0.7
+        }
     
     # No match → return unknown with empty fields
     return {
@@ -135,7 +177,10 @@ def apply_mapping(finding, rules):
         'attack_technique_id': '',
         'attack_technique_name': '',
         'attack_confidence': 0.0,
+        'attack_tactics_json': '[]',
+        'attack_techniques_json': '[]',
         'mapping_method': 'rule_no_match',
+        'mapping_type': 'heuristic_rule',
         'reason': 'No matching rule found',
         'needs_review': True  # All unmapped need review
     }
@@ -144,7 +189,6 @@ def apply_mapping(finding, rules):
 def load_findings(input_csv):
     """Load findings from CSV"""
     try:
-        findings = []
         with open(input_csv, 'r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
             if not reader.fieldnames:
@@ -156,7 +200,7 @@ def load_findings(input_csv):
             Logger.warning(f"No findings in {input_csv}")
         else:
             Logger.success(f"Loaded {len(findings)} findings from {input_csv}")
-        return findings
+        return normalize_dataframe_schema(pd.read_csv(input_csv)).to_dict('records')
     except FileNotFoundError:
         Logger.error(f"Input file not found: {input_csv}")
         sys.exit(1)
@@ -177,7 +221,8 @@ def save_findings(mapped_findings, output_csv):
         # Get all fieldnames from first finding + add new fields if needed
         fieldnames = list(mapped_findings[0].keys())
         new_fields = ['attack_tactic', 'attack_technique_id', 'attack_technique_name',
-                      'attack_confidence', 'mapping_method', 'reason', 'needs_review']
+                      'attack_confidence', 'attack_tactics_json', 'attack_techniques_json',
+                      'mapping_method', 'mapping_type', 'reason', 'needs_review']
         
         for field in new_fields:
             if field not in fieldnames:
@@ -242,7 +287,7 @@ def process_findings(input_csv, rules_file, output_csv):
         mapped_findings.append(enriched)
         
         # Update stats
-        if mapping['attack_technique_id']:
+        if mapping['attack_technique_id'] and mapping['attack_confidence'] >= 0.7:
             stats['mapped'] += 1
         else:
             stats['unmapped'] += 1
@@ -275,8 +320,8 @@ def process_findings(input_csv, rules_file, output_csv):
     
     mapped_pct = (stats['mapped'] / stats['total'] * 100) if stats['total'] > 0 else 0
     print(f"\nCoverage:")
-    print(f"  ✅ Mapped:     {stats['mapped']:3d}/{stats['total']} ({mapped_pct:5.1f}%)")
-    print(f"  ⭕ Unmapped:   {stats['unmapped']:3d}/{stats['total']} ({100-mapped_pct:5.1f}%) → AI enrichment needed")
+    print(f"  ✅ Trusted mapped (confidence ≥0.7): {stats['mapped']:3d}/{stats['total']} ({mapped_pct:5.1f}%)")
+    print(f"  ⭕ Unknown/needs review:             {stats['unmapped']:3d}/{stats['total']} ({100-mapped_pct:5.1f}%)")
     
     print(f"\nConfidence Levels:")
     print(f"  🟢 High (≥0.9):  {stats['by_confidence']['high']:3d}")
@@ -295,22 +340,23 @@ def process_findings(input_csv, rules_file, output_csv):
         print(f"  • {'Other':25s}: {others_count:3d}")
     
     print("\n" + "="*70)
-    print(f"\n✨ Next: Apply AI mapping to {stats['unmapped']} unmapped findings")
-    print(f"   Run: python3 scripts/ai_attack_mapping.py")
-    print(f"   Or:  python3 scripts/ai_attack_mapping_mock.py (no API key needed)\n")
+    print(f"\n✨ Next: Calculate risk priority")
+    print(f"   Run: python3 scripts/calculate_risk_priority.py")
+    if stats['unmapped']:
+        print(f"   Note: {stats['unmapped']} findings still need manual ATT&CK mapping review.\n")
     
     return mapped_findings
 
 # ============== ENTRY POINT ==============
 if __name__ == '__main__':
     # Tìm thư mục gốc của project (script nằm trong scripts/)
-    PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    DATA_DIR = os.path.join(PROJECT_ROOT, "data")
-    MAPPING_DIR = os.path.join(PROJECT_ROOT, "mapping")
+    PROJECT_ROOT = rt.project_root()
+    DATA_DIR = rt.run_dir()
+    MAPPING_DIR = PROJECT_ROOT / "mapping"
     
-    input_file = os.path.join(DATA_DIR, 'output', 'vuln_raw.csv')
-    rules_file = os.path.join(MAPPING_DIR, 'attack_mapping_rules.yml')
-    output_file = os.path.join(DATA_DIR, 'output', 'vuln_attack_mapped.csv')
+    input_file = rt.output_dir() / 'vuln_raw.csv'
+    rules_file = MAPPING_DIR / 'attack_mapping_rules.yml'
+    output_file = rt.output_dir() / 'vuln_attack_mapped.csv'
     
     # Validate input files exist
     if not Path(input_file).exists():

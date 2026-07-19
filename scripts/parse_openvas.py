@@ -2,16 +2,44 @@
 try:
     import defusedxml.ElementTree as ET  # XXE protection
 except ImportError:
-    import xml.etree.ElementTree as ET
-    print("⚠️  defusedxml not installed — using standard XML parser (XXE risk!)")
-    print("   Install: pip install defusedxml")
+    raise SystemExit("❌ defusedxml is required for parsing scanner XML safely. Install requirements.txt first.")
 import csv
 import os
 from datetime import datetime
 
+try:
+    from scripts import runtime_context as rt
+    from scripts.schema_utils import clean_text, extract_cves, extract_cwes, ids_to_csv, values_to_json
+except ImportError:
+    import runtime_context as rt
+    from schema_utils import clean_text, extract_cves, extract_cwes, ids_to_csv, values_to_json
+
+
+FIELDNAMES = [
+    'scanner', 'scan_time', 'asset', 'asset_type', 'location', 'url_or_port',
+    'finding_name', 'severity', 'cvss', 'cve', 'cve_list', 'cwe', 'cwe_list',
+    'plugin_id', 'description', 'scanner_evidence', 'scanner_solution',
+    'evidence', 'solution', 'evidence_solution', 'raw_reference',
+    'instance_count', 'affected_urls_json'
+]
+
+
+def _text(elem, max_length=None):
+    return clean_text(elem.text if elem is not None else "", max_length=max_length)
+
+
+def _safe_float(value, default=0.0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
 def parse_openvas_xml(xml_path, output_csv):
     """Parse OpenVAS XML report to normalized CSV"""
-    tree = ET.parse(xml_path)
+    try:
+        tree = ET.parse(xml_path)
+    except ET.ParseError as exc:
+        raise SystemExit(f"❌ Invalid OpenVAS XML: {exc}") from exc
     root = tree.getroot()
     
     findings = []
@@ -34,7 +62,7 @@ def parse_openvas_xml(xml_path, output_csv):
         if host is None or nvt is None:
             continue
         
-        severity_val = float(severity.text) if severity is not None else 0.0
+        severity_val = _safe_float(severity.text if severity is not None else None)
         
         # Map severity to category
         if severity_val >= 9.0:
@@ -63,29 +91,44 @@ def parse_openvas_xml(xml_path, output_csv):
         name_elem = nvt.find('name')
         desc_elem = result.find('description')
         solution_elem = result.find('.//solution')
+        port_text = _text(port)
+        description = _text(desc_elem, max_length=4000)
+        solution = _text(solution_elem, max_length=4000)
+        cves = extract_cves(cve_list)
+        cwes = extract_cwes(cwe_list)
+        plugin_id = nvt.get('oid', '') if nvt is not None else ''
         
         finding = {
             'scanner': 'OpenVAS',
             'scan_time': scan_time,
-            'asset': host.text,
+            'asset': _text(host),
             'asset_type': 'host',
-            'url_or_port': port.text if port is not None else '',
-            'finding_name': name_elem.text if name_elem is not None else 'Unknown',
+            'location': port_text,
+            'url_or_port': port_text,
+            'finding_name': _text(name_elem) or 'Unknown',
             'severity': sev_cat,
             'cvss': f"{severity_val:.1f}",
-            'cve': ','.join(cve_list),
-            'cwe': ','.join(cwe_list),
-            'description': (desc_elem.text or '')[:800] if desc_elem is not None else '',
-            'evidence_solution': (solution_elem.text or '')[:500] if solution_elem is not None else ''
+            'cve': ids_to_csv(cves),
+            'cve_list': values_to_json(cves),
+            'cwe': ids_to_csv(cwes),
+            'cwe_list': values_to_json(cwes),
+            'plugin_id': plugin_id,
+            'description': description,
+            'scanner_evidence': description,
+            'scanner_solution': solution,
+            # Legacy-compatible aliases. Keep them populated so older scripts do not drop data.
+            'evidence': description,
+            'solution': solution,
+            'evidence_solution': solution,
+            'raw_reference': plugin_id,
+            'instance_count': 1,
+            'affected_urls_json': '[]',
         }
         findings.append(finding)
     
     # Write CSV
     with open(output_csv, 'w', newline='', encoding='utf-8') as f:
-        fieldnames = ['scanner', 'scan_time', 'asset', 'asset_type', 'url_or_port',
-                      'finding_name', 'severity', 'cvss', 'cve', 'cwe', 
-                      'description', 'evidence_solution']
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer = csv.DictWriter(f, fieldnames=FIELDNAMES, extrasaction='ignore')
         writer.writeheader()
         writer.writerows(findings)
     
@@ -115,14 +158,11 @@ if __name__ == '__main__':
     import os
     
     # Tìm thư mục gốc của project (script nằm trong scripts/)
-    PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    DATA_DIR = os.path.join(PROJECT_ROOT, "data")
-    
     if len(sys.argv) > 1:
         xml_file = sys.argv[1]
     else:
         # Auto-detect: tìm file XML mới nhất trong data/raw/
-        raw_dir = os.path.join(DATA_DIR, 'raw')
+        raw_dir = rt.raw_dir()
         xml_files = glob.glob(os.path.join(raw_dir, '*.xml'))
         if xml_files:
             xml_file = max(xml_files, key=os.path.getmtime)
@@ -131,5 +171,5 @@ if __name__ == '__main__':
             print(f"❌ Không tìm thấy file XML nào trong {raw_dir}")
             sys.exit(1)
     
-    output_file = sys.argv[2] if len(sys.argv) > 2 else os.path.join(DATA_DIR, 'normalized', 'openvas_findings.csv')
+    output_file = sys.argv[2] if len(sys.argv) > 2 else rt.normalized_dir() / 'openvas_findings.csv'
     parse_openvas_xml(xml_file, output_file)

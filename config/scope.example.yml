@@ -1,0 +1,19 @@
+schema_version: "1.0"
+target: "https://target.example"
+allowed_hosts:
+  - "target.example"
+allowed_schemes:
+  - "https"
+allowed_ports:
+  - 443
+allowed_methods:
+  - "GET"
+  - "HEAD"
+  - "OPTIONS"
+same_origin_redirects_only: true
+max_requests_per_second: 1
+max_concurrency: 1
+auth_allowed: false
+notes:
+  - "Copy this file to your run directory as scope.yml and adjust it before dry-run."
+  - "Customer or production scope must be explicit before live verification."

@@ -6,7 +6,7 @@
 Input:  data/raw/zap_report.json (ZAP Traditional JSON export)
 Output: data/normalized/zap_findings.csv
 
-Improvements from v8:
+V1 baseline:
 - ✅ Error handling for missing files & invalid JSON
 - ✅ Deduplication of findings (same alert, multiple URLs)
 - ✅ Field validation & sanitization
@@ -21,6 +21,13 @@ import sys
 import os
 from pathlib import Path
 from datetime import datetime
+
+try:
+    from scripts import runtime_context as rt
+    from scripts.schema_utils import clean_text, extract_cwes, ids_to_csv, values_to_json
+except ImportError:
+    import runtime_context as rt
+    from schema_utils import clean_text, extract_cwes, ids_to_csv, values_to_json
 
 # ============== LOGGING ==============
 class Logger:
@@ -76,21 +83,31 @@ def normalize_severity(risk_desc):
     return severity_map.get(severity, 'Informational')
 
 def sanitize_text(text, max_length=500):
-    """Clean and truncate text"""
-    if not text:
-        return ""
-    
-    # Replace newlines & extra spaces
-    text = text.replace('\n', ' ').replace('\r', ' ')
-    text = ' '.join(text.split())  # Normalize whitespace
-    
-    # Truncate
-    return text[:max_length]
+    """Clean and truncate text."""
+    return clean_text(text, max_length=max_length)
 
 # ============== FINDING EXTRACTION ==============
-def extract_findings(data):
-    """Extract findings from ZAP JSON"""
+def _zap_cwe(cweid):
+    cwes = extract_cwes(f"CWE-{cweid}" if cweid else "")
+    return ids_to_csv(cwes)
+
+
+def _instance_evidence(instance):
+    method = clean_text(instance.get('method', 'GET'))
+    param = clean_text(instance.get('param', ''))
+    evidence = sanitize_text(instance.get('evidence', ''), 500)
+    parts = [method]
+    if param:
+        parts.append(param)
+    if evidence:
+        parts.append(f"| {evidence}")
+    return " ".join(parts).strip()
+
+
+def extract_alerts_and_instances(data):
+    """Extract alert-level findings and full instance-level detail from ZAP JSON."""
     findings = []
+    instance_rows = []
     scan_time = datetime.now().isoformat()
     
     # ZAP JSON structure: site[] → alerts[] → instances[]
@@ -101,70 +118,110 @@ def extract_findings(data):
             alert_name = alert.get('name', 'Unknown Alert')
             risk_desc = alert.get('riskdesc', 'Informational')
             risk = normalize_severity(risk_desc)
-            cweid = alert.get('cweid', '')
+            cwe = _zap_cwe(alert.get('cweid', ''))
             pluginid = alert.get('pluginid', '')
-            desc = sanitize_text(alert.get('desc', ''), 500)
-            solution = sanitize_text(alert.get('solution', ''), 300)
-            
-            # Each alert has multiple instances (URLs affected)
+            desc = sanitize_text(alert.get('desc', ''), 2000)
+            solution = sanitize_text(alert.get('solution', ''), 2000)
             instances = alert.get('instances', [])
-            
-            if not instances:
-                # No instances, create 1 generic finding
-                findings.append({
-                    'scanner': 'ZAP',
-                    'scan_time': scan_time,
-                    'asset': site_url,
-                    'asset_type': 'web',
-                    'url_or_port': site_url,
-                    'finding_name': alert_name,
-                    'severity': risk,
-                    'cwe': f"CWE-{cweid}" if cweid else '',
-                    'cve': '',
-                    'cvss': '',
-                    'plugin_id': pluginid,
-                    'description': desc,
-                    'evidence': '',
-                    'solution': solution
-                })
-            else:
-                # Create 1 finding per instance (limit to 10 for deduplication)
-                for inst in instances[:10]:
-                    url = inst.get('uri', site_url)
-                    method = inst.get('method', 'GET')
-                    param = inst.get('param', '')
-                    evidence = sanitize_text(inst.get('evidence', ''), 200)
-                    
-                    evidence_str = f"{method} {param} | {evidence}".strip()
-                    
-                    findings.append({
+            if not isinstance(instances, list):
+                instances = []
+
+            affected_urls = []
+            evidence_samples = []
+
+            if instances:
+                for idx, inst in enumerate(instances, start=1):
+                    url = clean_text(inst.get('uri', site_url)) or site_url
+                    evidence_str = _instance_evidence(inst)
+                    affected_urls.append(url)
+                    if evidence_str and len(evidence_samples) < 5:
+                        evidence_samples.append(evidence_str)
+
+                    instance_rows.append({
                         'scanner': 'ZAP',
                         'scan_time': scan_time,
                         'asset': site_url,
                         'asset_type': 'web',
+                        'location': url,
                         'url_or_port': url,
                         'finding_name': alert_name,
                         'severity': risk,
-                        'cwe': f"CWE-{cweid}" if cweid else '',
+                        'cwe': cwe,
+                        'cwe_list': values_to_json(extract_cwes(cwe)),
                         'cve': '',
+                        'cve_list': '[]',
                         'cvss': '',
                         'plugin_id': pluginid,
                         'description': desc,
+                        'scanner_evidence': evidence_str,
+                        'scanner_solution': solution,
                         'evidence': evidence_str,
-                        'solution': solution
+                        'solution': solution,
+                        'raw_reference': f"ZAP plugin {pluginid}" if pluginid else '',
+                        'instance_index': idx,
+                        'method': clean_text(inst.get('method', 'GET')),
+                        'param': clean_text(inst.get('param', '')),
+                        'attack': clean_text(inst.get('attack', ''), 1000),
                     })
-    
+            else:
+                affected_urls.append(site_url)
+
+            sample_evidence = "; ".join(evidence_samples[:3])
+            if instances and len(instances) > len(evidence_samples):
+                sample_evidence = f"{sample_evidence}; total_instances={len(instances)}".strip("; ")
+            elif not sample_evidence:
+                sample_evidence = f"total_instances={len(instances)}"
+
+            primary_location = affected_urls[0] if affected_urls else site_url
+            unique_urls = list(dict.fromkeys(affected_urls))
+
+            findings.append({
+                'scanner': 'ZAP',
+                'scan_time': scan_time,
+                'asset': site_url,
+                'asset_type': 'web',
+                'location': primary_location,
+                'url_or_port': primary_location,
+                'finding_name': alert_name,
+                'severity': risk,
+                'cwe': cwe,
+                'cwe_list': values_to_json(extract_cwes(cwe)),
+                'cve': '',
+                'cve_list': '[]',
+                'cvss': '',
+                'plugin_id': pluginid,
+                'description': desc,
+                'scanner_evidence': sample_evidence,
+                'scanner_solution': solution,
+                'evidence': sample_evidence,
+                'solution': solution,
+                'raw_reference': f"ZAP plugin {pluginid}" if pluginid else '',
+                'instance_count': len(instances),
+                'affected_urls_json': json.dumps(unique_urls, ensure_ascii=False),
+            })
+
+    return findings, instance_rows
+
+
+def extract_findings(data):
+    """Backward-compatible wrapper returning alert-level findings only."""
+    findings, _ = extract_alerts_and_instances(data)
     return findings
 
 # ============== DEDUPLICATION ==============
 def deduplicate_findings(findings):
-    """Deduplicate findings by alert + severity (same vuln on different URLs counted as 1)"""
+    """Deduplicate alert-level findings by alert, severity, and asset."""
     seen = {}
     unique_findings = []
     
     for finding in findings:
-        # Create unique key (finding name + severity + asset)
-        key = (finding['finding_name'], finding['severity'], finding['asset'])
+        key = (
+            finding['finding_name'],
+            finding['severity'],
+            finding['asset'],
+            finding.get('plugin_id', ''),
+            finding.get('location', ''),
+        )
         
         if key not in seen:
             seen[key] = True
@@ -174,20 +231,31 @@ def deduplicate_findings(findings):
     return unique_findings
 
 # ============== CSV EXPORT ==============
+FINDING_FIELDNAMES = [
+    'scanner', 'scan_time', 'asset', 'asset_type', 'location', 'url_or_port',
+    'finding_name', 'severity', 'cvss', 'cve', 'cve_list', 'cwe', 'cwe_list',
+    'plugin_id', 'description', 'scanner_evidence', 'scanner_solution',
+    'evidence', 'solution', 'raw_reference', 'instance_count',
+    'affected_urls_json'
+]
+
+INSTANCE_FIELDNAMES = [
+    'scanner', 'scan_time', 'asset', 'asset_type', 'location', 'url_or_port',
+    'finding_name', 'severity', 'cvss', 'cve', 'cve_list', 'cwe', 'cwe_list',
+    'plugin_id', 'description', 'scanner_evidence', 'scanner_solution',
+    'evidence', 'solution', 'raw_reference', 'instance_index', 'method',
+    'param', 'attack'
+]
+
+
 def save_findings(findings, output_csv):
     """Save findings to CSV"""
     try:
         output_path = Path(output_csv)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         
-        fieldnames = [
-            'scanner', 'scan_time', 'asset', 'asset_type', 'url_or_port',
-            'finding_name', 'severity', 'cwe', 'cve', 'cvss', 'plugin_id',
-            'description', 'evidence', 'solution'
-        ]
-        
         with open(output_path, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer = csv.DictWriter(f, fieldnames=FINDING_FIELDNAMES, extrasaction='ignore')
             writer.writeheader()
             writer.writerows(findings)
         
@@ -197,8 +265,23 @@ def save_findings(findings, output_csv):
         Logger.error(f"Failed to save CSV: {e}")
         return False
 
+
+def save_instances(instances, output_csv):
+    try:
+        output_path = Path(output_csv)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(output_path, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=INSTANCE_FIELDNAMES, extrasaction='ignore')
+            writer.writeheader()
+            writer.writerows(instances)
+        Logger.success(f"Saved {len(instances)} ZAP instances to {output_path}")
+        return True
+    except Exception as e:
+        Logger.error(f"Failed to save ZAP instances CSV: {e}")
+        return False
+
 # ============== STATISTICS ==============
-def show_stats(findings):
+def show_stats(findings, instances=None):
     """Display parsing statistics"""
     from collections import defaultdict
     
@@ -207,6 +290,8 @@ def show_stats(findings):
     print("="*70 + "\n")
     
     print(f"Total Findings: {len(findings)}")
+    if instances is not None:
+        print(f"Total ZAP Instances: {len(instances)}")
     
     # Severity distribution
     severity_counts = defaultdict(int)
@@ -241,7 +326,7 @@ def show_stats(findings):
     print("\n" + "="*70 + "\n")
 
 # ============== MAIN ==============
-def parse_zap(json_path, output_csv):
+def parse_zap(json_path, output_csv, instances_csv=None):
     """Main ZAP parsing workflow"""
     
     print("\n" + "="*70)
@@ -259,13 +344,17 @@ def parse_zap(json_path, output_csv):
     
     # Extract findings
     print(f"Step 2: Extracting findings...")
-    findings = extract_findings(data)
+    findings, instances = extract_alerts_and_instances(data)
     
     if not findings:
         Logger.warning("No findings extracted from ZAP report")
+        save_findings([], output_csv)
+        if instances_csv is None:
+            instances_csv = os.path.join(os.path.dirname(output_csv), 'zap_instances.csv')
+        save_instances([], instances_csv)
         return 0
     
-    Logger.success(f"Extracted {len(findings)} findings (may include duplicates)")
+    Logger.success(f"Extracted {len(findings)} alert-level findings and {len(instances)} instances")
     
     # Deduplicate
     print(f"Step 3: Deduplicating findings...")
@@ -276,26 +365,27 @@ def parse_zap(json_path, output_csv):
     print(f"Step 4: Saving to CSV...")
     if not save_findings(unique_findings, output_csv):
         sys.exit(1)
+
+    if instances_csv is None:
+        instances_csv = os.path.join(os.path.dirname(output_csv), 'zap_instances.csv')
+    if not save_instances(instances, instances_csv):
+        sys.exit(1)
     
     # Show statistics
-    show_stats(unique_findings)
+    show_stats(unique_findings, instances)
     
     print(f"✨ Next: Apply ATT&CK mapping")
-    print(f"   Run: python3 scripts/apply_attack_mapping_v9.py\n")
+    print(f"   Run: python3 scripts/apply_attack_mapping.py\n")
     
     return len(unique_findings)
 
 # ============== ENTRY POINT ==============
 if __name__ == '__main__':
-    # Tìm thư mục gốc của project (script nằm trong scripts/)
-    PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    DATA_DIR = os.path.join(PROJECT_ROOT, "data")
-    
     if len(sys.argv) > 1:
         json_file = sys.argv[1]
     else:
-        json_file = os.path.join(DATA_DIR, 'raw', 'zap_report.json')
+        json_file = rt.raw_dir() / 'zap_report.json'
     
-    output_file = os.path.join(DATA_DIR, 'normalized', 'zap_findings.csv')
+    output_file = rt.normalized_dir() / 'zap_findings.csv'
     
     parse_zap(json_file, output_file)

@@ -106,7 +106,11 @@ def main():
     scripts = [
         "run_pipeline.py", "parse_zap.py", "merge_vulns.py", 
         "apply_attack_mapping.py", "calculate_risk_priority.py", 
-        "export_excel.py", "export_json_soc.py", "exploit_matcher.py"
+        "export_excel.py", "export_json_soc.py", "export_ai_context.py",
+        "exploit_matcher.py", "parse_openvas.py", "policy_validator.py",
+        "runtime_context.py", "schema_utils.py", "verification_contract.py",
+        "verifier_lifecycle.py", "apply_verification_results.py",
+        "refresh_queue_risk.py",
     ]
     for s in scripts:
         s_path = os.path.join(root, "scripts", s)

@@ -9,22 +9,30 @@ env/
 # --- 2. Logs (File nhật ký chạy) ---
 logs/*
 *.log
-pipeline_v10_ultimate.log
-pipeline_v10_debug.log
+pipeline_v*.log
 
 # --- 3. Data & Reports (CỰC KỲ QUAN TRỌNG) ---
 # Chặn tất cả file dữ liệu nhạy cảm
 data/raw/*
 data/normalized/*
 data/output/*
+data/reports/*
+data/ai_context/*
+data/generated/*
+data/verification/*
+data/logs/*
+data/approval_manifest.json
+runs/*
+docs/workthrought.md
+docs/SESSION_HANDOFF_*.md
 
 # Chặn file báo cáo Excel/HTML nằm ở thư mục gốc (nếu có lỡ lưu ra ngoài)
-*.xlsx
-*.csv
-*.html
-*.xml
-*.json
-.~lock.*#
+/*.xlsx
+/*.csv
+/*.html
+/*.xml
+/*.json
+/.~lock.*#
 
 # --- 4. GIỮ LẠI CẤU TRÚC THƯ MỤC (Exception Rules) ---
 # Dùng dấu '!' để bảo Git: "Đừng ignore file .gitkeep"
@@ -32,6 +40,11 @@ data/output/*
 !data/raw/.gitkeep
 !data/normalized/.gitkeep
 !data/output/.gitkeep
+!data/reports/.gitkeep
+!data/ai_context/.gitkeep
+!data/generated/.gitkeep
+!data/verification/.gitkeep
+!data/logs/.gitkeep
 
 # --- 5. IDE Settings (Cấu hình trình soạn thảo) ---
 .vscode/

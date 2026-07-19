@@ -15,32 +15,39 @@ import traceback
 import shutil
 import glob
 import shlex
+import json
+import tempfile
 import pandas as pd
 from datetime import datetime
 from urllib.parse import urlparse
 
 # Threat Intelligence Modules
 try:
-    from scripts.enrich_epss import get_epss_score, enrich_dataframe_with_epss, get_epss_scores_batch
-    from scripts.exploit_matcher import check_exploit_maturity
-    from scripts.calculate_risk_priority import calculate_risk_priority
+    from scripts import runtime_context as rt
+    from scripts.enrich_epss import enrich_dataframe_with_epss
+    from scripts.exploit_matcher import check_exploit_maturity_detail
+    from scripts.calculate_risk_priority import calculate_risk_for_row
+    from scripts.schema_utils import extract_cves, normalize_dataframe_schema, redact_sensitive
 except ImportError:
     # Fallback for direct execution
-    from enrich_epss import get_epss_score, enrich_dataframe_with_epss, get_epss_scores_batch
-    from exploit_matcher import check_exploit_maturity
-    from calculate_risk_priority import calculate_risk_priority
+    import runtime_context as rt
+    from enrich_epss import enrich_dataframe_with_epss
+    from exploit_matcher import check_exploit_maturity_detail
+    from calculate_risk_priority import calculate_risk_for_row
+    from schema_utils import extract_cves, normalize_dataframe_schema, redact_sensitive
 
 # ============== CẤU HÌNH HỆ THỐNG ĐỘNG (Project Root) ==============
 # Tự động tìm thư mục gốc của project dựa trên vị trí của script này (nằm trong scripts/)
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SCRIPTS_DIR = os.path.join(PROJECT_ROOT, "scripts")
-DATA_DIR = os.path.join(PROJECT_ROOT, "data")
+PROJECT_ROOT = str(rt.project_root())
+SCRIPTS_DIR = str(rt.project_root() / "scripts")
+DATA_DIR = str(rt.run_dir())
+rt.ensure_runtime_dirs()
 
 ZAP_IMAGE = "ghcr.io/zaproxy/zaproxy:stable"
-RAW_DIR = os.path.join(DATA_DIR, "raw")
+RAW_DIR = str(rt.raw_dir())
 JSON_REPORT = os.path.join(RAW_DIR, "zap_report.json")
 HTML_REPORT = os.path.join(RAW_DIR, "zap_report.html")
-LOG_FILE = os.path.join(PROJECT_ROOT, "pipeline.log")
+LOG_FILE = str(rt.logs_dir() / "pipeline.log")
 
 # ============== TIMEOUT & RESOURCE LIMITS ==============
 MAX_ZAP_SCAN_SECONDS = 12 * 3600         # 12 tiếng tối đa cho subprocess (safety net)
@@ -132,6 +139,21 @@ def _make_result(returncode, stdout_text):
             self.stdout = out
     return CmdResult(returncode, stdout_text)
 
+
+def approve_dry_run_manifest(path, target, verifier_file, queue_file, operator="interactive-operator"):
+    """Approve a manifest only after contract hashes and scope are revalidated."""
+    try:
+        from scripts.verification_contract import approve_manifest
+    except ImportError:
+        from verification_contract import approve_manifest
+    return approve_manifest(
+        path,
+        operator=operator,
+        target=target,
+        verifier_file=verifier_file,
+        queue_file=queue_file,
+    )
+
 def run_cmd(command, ignore_error=False, timeout=None):
     """Run command với REAL-TIME output streaming.
     
@@ -150,7 +172,8 @@ def run_cmd(command, ignore_error=False, timeout=None):
         cmd_list = shlex.split(command)
     else:
         cmd_list = command
-    Debugger.info(f"Exec: {' '.join(cmd_list)}")
+    display_cmd = " ".join(redact_sensitive(str(part)) for part in cmd_list)
+    Debugger.info(f"Exec: {display_cmd}")
     if timeout:
         Debugger.info(f"Timeout safety net: {timeout}s ({timeout/3600:.1f}h)")
     
@@ -227,23 +250,73 @@ def run_cmd(command, ignore_error=False, timeout=None):
             sys.exit(1)
         return None
 
+def _java_properties_value(value):
+    """Escape a value for a Java .properties file."""
+    return str(value).replace("\\", "\\\\").replace("\r", "\\r").replace("\n", "\\n")
+
+def write_zap_auth_replacer_config(cookie_value, raw_dir=RAW_DIR):
+    """Write a temporary ZAP config file so auth cookies do not appear in process args."""
+    if not cookie_value:
+        return None
+    if "\r" in cookie_value or "\n" in cookie_value:
+        raise ValueError("Auth cookie contains CR/LF and was rejected to prevent header injection.")
+
+    os.makedirs(raw_dir, exist_ok=True)
+    fd, path = tempfile.mkstemp(prefix=".zap_auth_", suffix=".properties", dir=raw_dir, text=True)
+    try:
+        os.chmod(path, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write("replacer.full_list(0).description=auth_cookie\n")
+            handle.write("replacer.full_list(0).enabled=true\n")
+            handle.write("replacer.full_list(0).matchtype=REQ_HEADER\n")
+            handle.write("replacer.full_list(0).matchstr=Cookie\n")
+            handle.write("replacer.full_list(0).regex=false\n")
+            handle.write(f"replacer.full_list(0).replacement={_java_properties_value(cookie_value)}\n")
+    except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        raise
+    return path
+
+def zap_container_config_path(host_config_path):
+    return f"/zap/wrk/{os.path.basename(host_config_path)}"
+
+def remove_sensitive_temp_file(path):
+    if not path:
+        return
+    try:
+        os.remove(path)
+        Debugger.info("Removed temporary ZAP auth config file.")
+    except OSError as exc:
+        Debugger.warning(f"Could not remove temporary ZAP auth config file: {exc}")
+
 def check_directories():
     Debugger.info("Checking directory structure...")
-    dirs = [
-        os.path.join("data", "raw"),
-        os.path.join("data", "normalized"),
-        os.path.join("data", "output"),
-        "scripts"
-    ]
+    dirs = [RAW_DIR, str(rt.normalized_dir()), str(rt.output_dir()), SCRIPTS_DIR]
     for d in dirs:
         os.makedirs(d, exist_ok=True)
+
+
+def remove_stale_file(path, reason):
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+            Debugger.info(f"Removed stale {os.path.basename(path)} ({reason}).")
+    except OSError as exc:
+        Debugger.warning(f"Could not remove stale {path}: {exc}")
 
 def fix_permissions():
     if os.name != 'nt':
         try:
             uid = str(os.getuid())
             gid = str(os.getgid())
-            subprocess.run(["chown", "-R", f"{uid}:{gid}", "data/"],
+            subprocess.run(["chown", "-R", f"{uid}:{gid}", DATA_DIR],
                            stderr=subprocess.DEVNULL, timeout=10)
             Debugger.success("Permissions fixed.")
         except (subprocess.SubprocessError, OSError) as e:
@@ -276,37 +349,63 @@ def run_scanning_phase():
     if not parsed.hostname or any(c in url for c in [';', '|', '&', '$', '`', '\n']):
         Debugger.error(f"Invalid URL detected: {url}")
         sys.exit(1)
+    try:
+        from scripts.verification_contract import validate_scope
+    except ImportError:
+        from verification_contract import validate_scope
+    if not rt.scope_file().exists():
+        rt.write_scope_template(rt.scope_file(), url)
+        Debugger.error(f"Scope file was missing and has been created at {rt.scope_file()}. Review it before active ZAP contact.")
+        if os.environ.get("VA_ALLOW_UNSCOPED_SCAN") != "true":
+            return None, {'mode': 'BLACKBOX', 'cookie': None}
+    scope_errors = validate_scope(url, rt.scope_file())
+    if scope_errors and os.environ.get("VA_ALLOW_UNSCOPED_SCAN") != "true":
+        Debugger.error("Active scan scope validation failed:")
+        for item in scope_errors:
+            Debugger.error(f"  - {item}")
+        Debugger.info("Set VA_ALLOW_UNSCOPED_SCAN=true only for controlled lab runs.")
+        return None, {'mode': 'BLACKBOX', 'cookie': None}
 
     # ============== ENGAGEMENT TYPE SELECTION ==============
     print(f"\n{C.HEADER}{C.BOLD}[ ENGAGEMENT TYPE ]{C.END}")
-    print(f"  {C.RED}1. 🏴‍☠️ BLACKBOX PENTEST{C.END} — Unauthenticated, Full Exploit Power")
-    print(f"  {C.GREEN}2. 🛡️  GREYBOX AUDITOR{C.END}  — Authenticated, Production-Safe")
+    print(f"  {C.RED}1. 🏴‍☠️ BLACKBOX VERIFIER{C.END} — Unauthenticated, Production-Safe")
+    print(f"  {C.GREEN}2. 🛡️  GREYBOX VERIFIER{C.END}  — Authenticated, Production-Safe")
     engagement_choice = input(f"{C.BOLD}👉 Choose Engagement Type (1-2, Default: 1): {C.END}").strip() or '1'
 
     scan_context = {'mode': 'BLACKBOX', 'cookie': None}
     if engagement_choice == '2':
         scan_context['mode'] = 'GREYBOX'
-        print(f"\n{C.GREEN}🛡️  GREYBOX AUDITOR MODE ACTIVATED{C.END}")
-        print(f"   {C.CYAN}ℹ️  Chế độ này yêu cầu Session Cookie/Token để quét xuyên thấu màn hình đăng nhập.{C.END}")
-        print(f"   {C.CYAN}ℹ️  SQLMap sẽ chạy ở chế độ an toàn (risk=1) để bảo vệ dữ liệu Production.{C.END}")
+        print(f"\n{C.GREEN}🛡️  GREYBOX VERIFIER MODE ACTIVATED{C.END}")
+        print(f"   {C.CYAN}ℹ️  Chế độ này dùng Session Cookie/Token chỉ cho kiểm chứng read-only trong phạm vi.{C.END}")
+        print(f"   {C.CYAN}ℹ️  Không in/lưu raw cookie. SQLMap mặc định bị tắt trên Production trừ khi bật VA_ALLOW_SQLMAP=true.{C.END}")
         auth_cookie = input(f"{C.BOLD}👉 Session Cookie (VD: PHPSESSID=abc123; token=xyz): {C.END}").strip()
         if auth_cookie:
             scan_context['cookie'] = auth_cookie
-            Debugger.success(f"Cookie đã lưu: {auth_cookie[:30]}...")
+            os.environ['VA_AUTH_COOKIE'] = auth_cookie
+            Debugger.success("Auth cookie/token received (redacted; not printed).")
         else:
             Debugger.warning("Không có Cookie. ZAP sẽ quét Unauthenticated nhưng Agent vẫn chạy ở chế độ Production-Safe.")
     else:
-        print(f"\n{C.RED}🏴‍☠️  BLACKBOX PENTEST MODE — Full firepower enabled.{C.END}")
+        print(f"\n{C.RED}🏴‍☠️  BLACKBOX VERIFIER MODE — Unauthenticated, production-safe checks only.{C.END}")
 
     print(f"\n{C.CYAN}[ ZAP SCAN MODES ]{C.END}")
     print("1. ⚡ Quick Baseline Scan")
-    print("2. 🐢 Full Deep Scan (Recommended)")
+    print("2. 🐢 Full Deep Scan (lab/staging only)")
     print("3. 🕷️ AJAX Spider Scan")
+    print("4. 🧯 Fragile Device Baseline (secondary source only)")
     
-    choice = input(f"{C.BOLD}👉 Option (1-3): {C.END}").strip()
-    script = "zap-baseline.py"; params = ""
-    if choice == '2': script = "zap-full-scan.py"
-    elif choice == '3': params = "-j"
+    choice = input(f"{C.BOLD}👉 Option (1-4): {C.END}").strip()
+    script = "zap-baseline.py"; params = []
+    if choice == '2':
+        if os.environ.get("VA_ALLOW_ZAP_FULL_SCAN") != "true":
+            Debugger.error("Full ZAP scan requires VA_ALLOW_ZAP_FULL_SCAN=true and should not be used for fragile network/security devices.")
+            return None, scan_context
+        script = "zap-full-scan.py"
+    elif choice == '3':
+        params = ["-j"]
+    elif choice == '4':
+        params = ["-m", "1", "-T", "5", "-z", "-config spider.maxDepth=1 -config spider.threadCount=1 -config connection.timeoutInSecs=5"]
+        Debugger.warning("Fragile Device Baseline selected: use ZAP as secondary scanner evidence only; do not treat it as definitive verification.")
 
     # Xóa report cũ
     for old_report in [JSON_REPORT, HTML_REPORT]:
@@ -316,7 +415,6 @@ def run_scanning_phase():
         except OSError as e:
             Debugger.warning(f"Could not remove {old_report}: {e}")
 
-    cwd = os.getcwd()
     uid = str(os.getuid()) if os.name != 'nt' else '0'
     gid = str(os.getgid()) if os.name != 'nt' else '0'
     cmd = [
@@ -326,26 +424,25 @@ def run_scanning_phase():
         "--memory-swap", DOCKER_MEMORY_LIMIT,   # Không swap
         "--shm-size", "2g",                    # Tăng shm_size chống crash trình duyệt (Firefox/Chrome) khi quét DOM XSS
         "-u", f"{uid}:{gid}",  # User hiện tại, KHÔNG dùng root (-u 0)
-        "-v", f"{cwd}/data/raw:/zap/wrk/:rw",
+        "-v", f"{RAW_DIR}:/zap/wrk/:rw",
         "-t", ZAP_IMAGE, script,
         "-t", url, "-J", "zap_report.json", "-r", "zap_report.html",
     ]
 
-    # === GREYBOX: Inject Cookie vào ZAP qua Replacer config ===
+    zap_auth_config_path = None
+
+    # === GREYBOX: Inject Cookie vào ZAP qua Replacer config file tạm ===
     if scan_context['mode'] == 'GREYBOX' and scan_context.get('cookie'):
         cookie_val = scan_context['cookie']
-        cmd.extend([
-            "-config", "replacer.full_list(0).description=auth_cookie",
-            "-config", "replacer.full_list(0).enabled=true",
-            "-config", "replacer.full_list(0).matchtype=REQ_HEADER",
-            "-config", "replacer.full_list(0).matchstr=Cookie",
-            "-config", "replacer.full_list(0).regex=false",
-            "-config", f"replacer.full_list(0).replacement={cookie_val}",
-        ])
-        Debugger.success("ZAP Replacer: Cookie Auth Header đã được inject vào mọi request.")
+        try:
+            zap_auth_config_path = write_zap_auth_replacer_config(cookie_val, raw_dir=RAW_DIR)
+            cmd.extend(["-z", f"-configfile {zap_container_config_path(zap_auth_config_path)}"])
+            Debugger.success("ZAP Replacer auth header configured via temporary config file (redacted).")
+        except ValueError as exc:
+            Debugger.warning(f"ZAP authenticated scan disabled: {exc}")
     
     if params:
-        cmd.append(params)
+        cmd.extend(params)
     
     # =============================================
     # ZAP EXIT CODES (quan trọng!):
@@ -362,7 +459,10 @@ def run_scanning_phase():
     Debugger.info("ZAP will run until completion. This may take several hours for full scan.")
     
     scan_start = time.time()
-    result = run_cmd(cmd, ignore_error=True, timeout=MAX_ZAP_SCAN_SECONDS)
+    try:
+        result = run_cmd(cmd, ignore_error=True, timeout=MAX_ZAP_SCAN_SECONDS)
+    finally:
+        remove_sensitive_temp_file(zap_auth_config_path)
     scan_duration = time.time() - scan_start
     
     Debugger.info(f"ZAP scan finished after {scan_duration:.0f}s ({scan_duration/3600:.1f} hours)")
@@ -413,7 +513,6 @@ def run_scanning_phase():
 # ============== PHASE 2: PROCESSING ==============
 def run_processing_phase():
     Debugger.step("PHASE 2: DATA PROCESSING")
-    if not os.path.exists(JSON_REPORT): Debugger.error("Missing Report"); return
 
     py = get_python_exec()
     s_parse_zap = os.path.join(SCRIPTS_DIR, "parse_zap.py")
@@ -421,15 +520,28 @@ def run_processing_phase():
     s_merge = os.path.join(SCRIPTS_DIR, "merge_vulns.py")
     s_map = os.path.join(SCRIPTS_DIR, "apply_attack_mapping.py")
     s_risk = os.path.join(SCRIPTS_DIR, "calculate_risk_priority.py")
-
-    run_cmd([py, s_parse_zap])
-    
+    zap_findings_file = str(rt.normalized_dir() / "zap_findings.csv")
+    zap_instances_file = str(rt.normalized_dir() / "zap_instances.csv")
+    openvas_findings_file = str(rt.normalized_dir() / "openvas_findings.csv")
     openvas_report = find_latest_openvas_xml(RAW_DIR)
+
+    if not os.path.exists(JSON_REPORT) and not openvas_report:
+        Debugger.error("Missing scanner input. Need ZAP JSON or OpenVAS XML under data/raw/.")
+        return
+
+    if os.path.exists(JSON_REPORT):
+        run_cmd([py, s_parse_zap])
+    else:
+        Debugger.warning("No ZAP JSON found in data/raw/ — skipping ZAP parsing.")
+        remove_stale_file(zap_findings_file, "current run has no ZAP JSON")
+        remove_stale_file(zap_instances_file, "current run has no ZAP JSON")
+
     if openvas_report:
         Debugger.success(f"Found OpenVAS report: {os.path.basename(openvas_report)}")
-        run_cmd([py, s_parse_openvas, openvas_report, "data/normalized/openvas_findings.csv"])
+        run_cmd([py, s_parse_openvas, openvas_report, openvas_findings_file])
     else:
         Debugger.warning("No OpenVAS XML found in data/raw/ — skipping OpenVAS parsing.")
+        remove_stale_file(openvas_findings_file, "current run has no OpenVAS XML")
     
     run_cmd([py, s_merge])
     run_cmd([py, s_map])
@@ -453,8 +565,8 @@ def run_threat_intel_phase(target_url, missing_tools=[], scan_context=None):
     Debugger.step("PHASE 3: THREAT INTELLIGENCE ENRICHMENT")
     
     # Data paths
-    enriched_file = os.path.join(DATA_DIR, "output", "vuln_attack_enriched.csv")
-    queue_file = os.path.join(DATA_DIR, "output", "vuln_validation_queue.csv")
+    enriched_file = str(rt.output_dir() / "vuln_attack_enriched.csv")
+    queue_file = str(rt.output_dir() / "vuln_validation_queue.csv")
     
     # Load the enriched data
     if not os.path.exists(enriched_file):
@@ -462,159 +574,213 @@ def run_threat_intel_phase(target_url, missing_tools=[], scan_context=None):
         return
     
     try:
-        df = pd.read_csv(enriched_file)
+        df = normalize_dataframe_schema(pd.read_csv(enriched_file))
         Debugger.success(f"Loaded {len(df)} vulnerabilities")
     except Exception as e:
         Debugger.error(f"Failed to load data: {e}")
         return
     
     # --- STEP 1: EPSS Enrichment ---
-    Debugger.info("📡 Fetching EPSS scores for all CVEs...")
-    
-    # Find CVE column (might be 'cve_id', 'cve', 'CVE', etc.)
-    cve_col = None
-    for col in ['cve_id', 'cve', 'CVE', 'cve_ids']:
-        if col in df.columns:
-            cve_col = col
-            break
-    
-    if cve_col:
-        # --- BATCH EPSS ENRICHMENT (tránh rate limiting) ---
-        all_cves = []
-        cve_index_map = {}  # cve -> list of row indices
-        
-        for idx, row in df.iterrows():
-            cve_id = row.get(cve_col, "")
-            if pd.notna(cve_id) and str(cve_id).strip().upper().startswith("CVE-"):
-                cve_clean = str(cve_id).strip()
-                all_cves.append(cve_clean)
-                if cve_clean not in cve_index_map:
-                    cve_index_map[cve_clean] = []
-                cve_index_map[cve_clean].append(idx)
-        
-        Debugger.info(f"Found {len(all_cves)} CVE IDs to query EPSS ({len(set(all_cves))} unique)")
-        
-        # Batch query
-        batch_results = get_epss_scores_batch(list(set(all_cves)))
-        
-        # Fill results
-        epss_scores = [0.0] * len(df)
-        epss_percentiles = [0.0] * len(df)
-        
-        for idx, row in df.iterrows():
-            cve_id = row.get(cve_col, "")
-            if pd.notna(cve_id) and str(cve_id).strip() in batch_results:
-                cve_clean = str(cve_id).strip()
-                score, pct = batch_results[cve_clean]
-                epss_scores[idx] = score
-                epss_percentiles[idx] = pct
-                if score > 0:
-                    print(f"   {cve_clean}: EPSS={score:.4f}")
-        
-        df['epss_score'] = epss_scores
-        df['epss_percentile'] = epss_percentiles
-        Debugger.success(f"EPSS enrichment complete. {sum(1 for s in epss_scores if s > 0)} CVEs with EPSS data.")
+    Debugger.info("📡 Fetching EPSS scores for parsed CVEs...")
+    all_cves = []
+    for _, row in df.iterrows():
+        all_cves.extend(extract_cves(row.get('cve'), row.get('cve_list')))
+
+    if all_cves:
+        Debugger.info(f"Found {len(all_cves)} CVE references ({len(set(all_cves))} unique) to query EPSS")
+        df = enrich_dataframe_with_epss(df, cve_column='cve')
+        nonzero_epss = len(df[df['epss_score'].fillna(0) > 0])
+        Debugger.success(f"EPSS enrichment complete. {nonzero_epss} findings with non-zero EPSS.")
     else:
-        Debugger.warning("No CVE column found. Skipping EPSS enrichment.")
+        Debugger.warning("No CVE IDs found. Skipping EPSS enrichment.")
         df['epss_score'] = 0.0
         df['epss_percentile'] = 0.0
+        df['epss_source_cve'] = ''
+        df['epss_all_json'] = '[]'
     
     # Initialize columns
-    if 'agent_status' not in df.columns:
-        df['agent_status'] = ''
-    if 'agent_evidence' not in df.columns:
-        df['agent_evidence'] = ''
-    if 'exploit_available' not in df.columns:
-        df['exploit_available'] = False
+    defaults = {
+        'agent_status': '',
+        'agent_command': '',
+        'agent_evidence': '',
+        'exploit_status': '',
+        'exploit_evidence': '',
+        'exploit_sources_json': '[]',
+        'exploit_source_cves': '',
+        'exploit_match_basis': '',
+        'exploit_match_note': '',
+        'exploit_context_review_required': False,
+        'exploit_context_summary': '',
+        'exploit_available': False,
+        'verification_status': 'NOT_VERIFIED',
+        'verification_evidence': '',
+        'verification_method': '',
+        'verification_command': '',
+        'verification_error': '',
+        'verification_confidence': '',
+        'verification_started_at': '',
+        'verification_completed_at': '',
+        'verification_safe_mode': True,
+    }
+    for column, default in defaults.items():
+        if column not in df.columns:
+            df[column] = default
+    text_columns = [
+        'agent_status', 'agent_command', 'agent_evidence', 'exploit_status', 'exploit_evidence',
+        'exploit_sources_json', 'exploit_source_cves', 'exploit_match_basis',
+        'exploit_match_note', 'exploit_context_summary', 'verification_status',
+        'verification_evidence', 'verification_method', 'verification_command',
+        'verification_error', 'verification_confidence', 'verification_started_at',
+        'verification_completed_at'
+    ]
+    for column in text_columns:
+        df[column] = df[column].astype('object').where(pd.notna(df[column]), '')
     
     # --- STEP 2: Interactive Decision Point ---
     print(f"\n{C.BOLD}{'='*60}{C.END}")
     print(f"{C.HEADER}🔀 VERIFICATION MODE SELECTION{C.END}")
     print(f"{'='*60}")
-    print(f"{C.CYAN}[A] Active Verification{C.END} - Use verify_vulns.py (network commands: nmap, curl)")
-    print(f"{C.GREEN}[F] Fast Scan{C.END} - Check exploit maturity only (no network commands)")
+    print(f"{C.CYAN}[A] Generate Agent Verification Queue{C.END} - hand off safe active checks to Codex/Cursor/agent")
+    print(f"{C.GREEN}[F] Fast Exploit-Intel Scan{C.END} - CVE → public exploit/module/template only")
     print()
     
     choice = input(f"{C.BOLD}[?] Launch Active Verification Agent? (y/n): {C.END}").strip().lower()
     
     if choice in ['y', 'yes', 'a', 'active']:
-        # === ACTIVE VERIFICATION MODE ===
-        Debugger.step("RUNNING ACTIVE VERIFICATION AGENT")
+        # === ACTIVE VERIFICATION QUEUE MODE ===
+        Debugger.step("GENERATING ACTIVE VERIFICATION QUEUE")
         
         # Save current state for the agent (already has EPSS data from Step 1)
+        df['agent_status'] = 'WAITING'
         df.to_csv(queue_file, index=False)
         
-        # Extract hostname for verify_vulns.py
-        parsed_target = urlparse(target_url if '://' in target_url else f'http://{target_url}')
-        target_host = parsed_target.hostname or target_url
+        target_for_verify = target_url if '://' in target_url else f'http://{target_url}'
         
-        # Check if verify_vulns.py exists
-        verify_script = os.path.join(SCRIPTS_DIR, "verify_vulns.py")
+        py = get_python_exec()
+        s_ai_context = os.path.join(SCRIPTS_DIR, "export_ai_context.py")
+        if os.path.exists(s_ai_context):
+            run_cmd([py, s_ai_context], ignore_error=True)
+
+        verify_script = str(rt.verifier_file())
+        lifecycle_script = os.path.join(SCRIPTS_DIR, "verifier_lifecycle.py")
+        lifecycle_mode = "GREYBOX" if scan_context.get("mode") == "GREYBOX" else "BLACKBOX"
+
+        if not rt.scope_file().exists():
+            rt.write_scope_template(rt.scope_file(), target_for_verify)
+            Debugger.warning(f"Created scope template for this run: {rt.scope_file()}. Review allowed_hosts/allowed_ports before approving live verification.")
+
+        run_cmd(
+            [py, lifecycle_script, "--mode", lifecycle_mode, "--verifier-file", verify_script, "prepare", target_for_verify],
+            ignore_error=True,
+        )
+
         if os.path.exists(verify_script):
-            py = get_python_exec()
-            run_cmd([py, verify_script, target_host], ignore_error=True)
-            
-            # Reload data after verification — EPSS data is preserved from Step 1
+            dry_run_result = run_cmd(
+                [py, lifecycle_script, "--mode", lifecycle_mode, "--verifier-file", verify_script, "dry-run", target_for_verify],
+                ignore_error=True,
+            )
+            if dry_run_result is None or dry_run_result.returncode != 0:
+                Debugger.error("Verifier lifecycle dry-run failed. Live verification was not started.")
+                _print_agent_prompt(target_url, missing_tools, scan_context)
+                return
+
+            print(f"\n{C.YELLOW}{C.BOLD}APPROVAL REQUIRED{C.END}")
+            print(f"Dry-run approval manifest: {rt.approval_file()}")
+            print("Type APPROVE to bind the reviewed verifier/target/queue/scope hashes and run live verification now.")
+            approval = input(f"{C.BOLD}👉 Approval: {C.END}").strip()
+            if approval == "APPROVE":
+                approve_result = run_cmd(
+                    [py, lifecycle_script, "--mode", lifecycle_mode, "--verifier-file", verify_script, "approve", target_for_verify],
+                    ignore_error=True,
+                )
+                if approve_result is None or approve_result.returncode != 0:
+                    Debugger.error("Approval failed. Live verification was not started.")
+                    return
+                live_result = run_cmd(
+                    [py, lifecycle_script, "--mode", lifecycle_mode, "--verifier-file", verify_script, "run", target_for_verify],
+                    ignore_error=True,
+                )
+                if live_result is None or live_result.returncode != 0:
+                    Debugger.error("Live verification failed or results were rejected. Reports were not exported from stale verification state.")
+                    return
+            else:
+                Debugger.warning("Live verification skipped. Review the dry-run manifest before approving.")
+                _print_agent_prompt(target_url, missing_tools, scan_context)
+                return
+
             if os.path.exists(queue_file):
-                df = pd.read_csv(queue_file)
+                df = normalize_dataframe_schema(pd.read_csv(queue_file))
         else:
-            # Run bridge script for manual agent handoff
-            py = get_python_exec()
-            s_bridge = os.path.join(SCRIPTS_DIR, "antigravity_agent_bridge.py")
-            run_cmd([py, s_bridge], ignore_error=True)
-            
-            # Print the original prompt for Antigravity agent
+            Debugger.warning(f"Generated verifier not found at {verify_script}. Handoff prompt created; stopping before live target contact.")
             _print_agent_prompt(target_url, missing_tools, scan_context)
-            return  # Exit here - agent will handle the rest
+            return
     else:
-        # === FAST SCAN MODE ===
-        Debugger.step("⚡ RUNNING FAST EXPLOIT CHECK")
-        print(f"{C.GREEN}⚡ Running Fast Exploit Check (no network commands)...{C.END}")
+        # === FAST EXPLOIT-INTEL MODE ===
+        Debugger.step("⚡ RUNNING FAST EXPLOIT-INTEL CHECK")
+        print(f"{C.GREEN}⚡ Running CVE exploit-intel check only (no target exploitation)...{C.END}")
         
         for idx, row in df.iterrows():
-            cve_id = row.get(cve_col, "") if cve_col else ""
+            cves = extract_cves(row.get('cve'), row.get('cve_list'))
             
-            if pd.isna(cve_id) or not str(cve_id).strip():
-                # No CVE ID
-                df.at[idx, 'agent_status'] = 'SKIPPED_NO_CVE'
-                df.at[idx, 'agent_evidence'] = 'No CVE ID available for exploit check'
+            if not cves:
+                df.at[idx, 'exploit_status'] = 'NO_CVE_ID'
+                df.at[idx, 'exploit_evidence'] = 'No CVE ID available for exploit intelligence check'
+                df.at[idx, 'exploit_sources_json'] = '[]'
+                df.at[idx, 'exploit_source_cves'] = ''
+                df.at[idx, 'exploit_match_basis'] = 'NO_CVE'
+                df.at[idx, 'exploit_match_note'] = 'No CVE ID was available for exploit-intelligence lookup.'
+                df.at[idx, 'exploit_context_review_required'] = False
+                df.at[idx, 'exploit_context_summary'] = 'No CVE ID was available for exploit-intelligence lookup.'
                 df.at[idx, 'exploit_available'] = False
+                # Legacy aliases for older CSV consumers.
+                df.at[idx, 'agent_status'] = 'NO_CVE_ID'
+                df.at[idx, 'agent_evidence'] = 'No CVE ID available for exploit intelligence check'
             else:
-                cve_id = str(cve_id).strip()
-                is_weaponized, source = check_exploit_maturity(cve_id)
+                cve_input = ','.join(cves)
+                context_text = ' '.join(
+                    str(row.get(column, ''))
+                    for column in [
+                        'finding_name',
+                        'description',
+                        'scanner_evidence',
+                        'location',
+                        'raw_reference',
+                    ]
+                )
+                detail = check_exploit_maturity_detail(cve_input, context_text=context_text)
                 
-                if is_weaponized:
-                    df.at[idx, 'agent_status'] = 'WEAPONIZED'
-                    df.at[idx, 'agent_evidence'] = source
-                    df.at[idx, 'exploit_available'] = True
-                    print(f"   ⚠️  {cve_id}: WEAPONIZED ({source})")
-                else:
-                    df.at[idx, 'agent_status'] = 'POTENTIAL'
-                    df.at[idx, 'agent_evidence'] = 'No public exploit found'
-                    df.at[idx, 'exploit_available'] = False
+                df.at[idx, 'exploit_status'] = detail['status']
+                df.at[idx, 'exploit_evidence'] = detail['evidence']
+                df.at[idx, 'exploit_sources_json'] = json.dumps(detail['sources'], ensure_ascii=False)
+                df.at[idx, 'exploit_source_cves'] = ','.join(detail['matched_cves'])
+                df.at[idx, 'exploit_match_basis'] = detail.get('match_basis', '')
+                df.at[idx, 'exploit_match_note'] = detail.get('match_note', '')
+                df.at[idx, 'exploit_context_review_required'] = detail.get('context_review_required', False)
+                df.at[idx, 'exploit_context_summary'] = detail.get('context_summary', '')
+                df.at[idx, 'exploit_available'] = detail['exploit_available']
+                df.at[idx, 'agent_status'] = detail['status']
+                df.at[idx, 'agent_evidence'] = detail['evidence']
+                if detail['exploit_available']:
+                    print(f"   ⚠️  {cve_input}: {detail['status']} ({detail['evidence']})")
         
-        weaponized_count = len(df[df['agent_status'] == 'WEAPONIZED'])
-        Debugger.success(f"Fast Scan complete. Found {weaponized_count} weaponized vulnerabilities.")
+        public_count = len(df[df['exploit_available'] == True])
+        Debugger.success(f"Fast exploit-intel complete. Found {public_count} findings with public exploit/module/template evidence.")
     
     # --- STEP 3: Calculate Final Risk Score ---
     Debugger.step("CALCULATING FINAL RISK SCORES")
     
     severity_col = 'severity' if 'severity' in df.columns else 'risk' if 'risk' in df.columns else None
     
-    final_scores = []
-    priorities = []
+    risk_details = []
     
     for idx, row in df.iterrows():
-        severity = row.get(severity_col, 'Unknown') if severity_col else 'Unknown'
-        epss = row.get('epss_score', 0.0)
-        is_weaponized = row.get('exploit_available', False) or row.get('agent_status', '') == 'WEAPONIZED'
-        
-        score, priority = calculate_risk_priority(severity, epss_score=epss, is_weaponized=is_weaponized)
-        final_scores.append(score)
-        priorities.append(priority)
+        risk_details.append(calculate_risk_for_row(row))
     
-    df['risk_score'] = final_scores
-    df['priority'] = priorities
+    df['risk_score'] = [item['risk_score'] for item in risk_details]
+    df['priority'] = [item['priority'] for item in risk_details]
+    df['risk_reason'] = [item['risk_reason'] for item in risk_details]
+    df['risk_components_json'] = [item['risk_components_json'] for item in risk_details]
+    df = normalize_dataframe_schema(df)
     
     # Sort by priority and score
     df.sort_values(by=['priority', 'risk_score'], ascending=[True, False], inplace=True)
@@ -636,6 +802,9 @@ def run_threat_intel_phase(target_url, missing_tools=[], scan_context=None):
     s_json = os.path.join(SCRIPTS_DIR, "export_json_soc.py")
     if os.path.exists(s_json):
         run_cmd([py, s_json])
+    s_ai_context = os.path.join(SCRIPTS_DIR, "export_ai_context.py")
+    if os.path.exists(s_ai_context):
+        run_cmd([py, s_ai_context], ignore_error=True)
     # -------------------------
     
     # Final summary
@@ -643,9 +812,12 @@ def run_threat_intel_phase(target_url, missing_tools=[], scan_context=None):
     print(f"{C.GREEN}{C.BOLD}✅ PIPELINE COMPLETE{C.END}")
     print(f"{'='*60}")
     print(f"📁 CSV: {queue_file}")
-    print(f"📊 Excel: vuln_attack_report.xlsx")
+    print(f"📊 Internal Excel: {rt.reports_dir() / 'internal' / 'vuln_attack_report.xlsx'}")
+    print(f"📊 Customer Excel: {rt.reports_dir() / 'customer_safe' / 'vuln_attack_report.xlsx'}")
+    print(f"🧾 Internal JSON: {rt.reports_dir() / 'internal' / 'vuln_report_soc.json'}")
+    print(f"🧾 Customer JSON: {rt.reports_dir() / 'customer_safe' / 'vuln_report_soc.json'}")
     print(f"🔥 P1 (Critical): {len(df[df['priority'] == 'P1'])} items")
-    print(f"⚠️  Weaponized: {len(df[df['agent_status'] == 'WEAPONIZED'])} items")
+    print(f"⚠️  Public exploit/template available: {len(df[df['exploit_available'] == True])} items")
 
 
 def _print_agent_prompt(target_url, tools, scan_context=None):
@@ -660,221 +832,136 @@ def _print_agent_prompt(target_url, tools, scan_context=None):
     py = get_python_exec()
     s_export = os.path.join(SCRIPTS_DIR, "export_excel.py")
     s_json = os.path.join(SCRIPTS_DIR, "export_json_soc.py")
+    s_ai_context = os.path.join(SCRIPTS_DIR, "export_ai_context.py")
+    verify_script = str(rt.verifier_file())
+    policy_script = os.path.join(SCRIPTS_DIR, "policy_validator.py")
+    lifecycle_script = os.path.join(SCRIPTS_DIR, "verifier_lifecycle.py")
+    apply_results_script = os.path.join(SCRIPTS_DIR, "apply_verification_results.py")
+    approval_path = str(rt.approval_file())
+    plan_path = str(rt.verification_plan_file())
+    results_path = str(rt.verification_results_file())
+    queue_path = str(rt.output_dir() / "vuln_validation_queue.csv")
+    context_path = str(rt.ai_context_dir() / "internal" / "verification_context.jsonl")
+    zap_context_path = str(rt.ai_context_dir() / "internal" / "zap_instances_compact.jsonl")
+    manifest_context_path = str(rt.ai_context_dir() / "internal" / "manifest.json")
+    target_display = target_url or "<target_from_sys.argv[1]>"
+    mode_label = "GREYBOX_AUTHENTICATED" if mode == 'GREYBOX' else "BLACKBOX_UNAUTHENTICATED"
+    auth_supplied = bool(auth_cookie)
+    auth_line = (
+        "Authentication is allowed only from runtime environment variables VA_AUTH_COOKIE or VA_AUTH_HEADER. "
+        "The pipeline received an auth value, but it is intentionally redacted from this prompt."
+        if mode == 'GREYBOX' and auth_supplied
+        else (
+            "Greybox mode was selected but no auth secret is included here. If auth is required, read it from VA_AUTH_COOKIE or VA_AUTH_HEADER at runtime."
+            if mode == 'GREYBOX'
+            else "No authentication is authorized in blackbox mode. Do not use guessed/default credentials, brute force, credential stuffing, or session reuse."
+        )
+    )
+
+    common_prompt = f"""
+You are the AI verification agent for an internal Vulnerability Assessment tool.
+
+First read and obey: docs/VERIFY.md
+
+Mode: {mode_label}
+Target scope: {target_display}
+Tool availability observed locally: nuclei={ts['nuclei']}, sqlmap={ts['sqlmap']}, wpscan={ts['wpscan']}, nmap={ts['nmap']}
+Auth rule: {auth_line}
+
+Runtime paths for this run:
+- generated verifier to create: {verify_script}
+- scope file: {rt.scope_file()}
+- AI manifest: {manifest_context_path}
+- finding context JSONL: {context_path}
+- ZAP instance JSONL: {zap_context_path}
+- validation queue, read-only for generated code: {queue_path}
+- dry-run plan output: {plan_path}
+- live results JSONL output: {results_path}
+- approval manifest, read-only for generated code: {approval_path}
+
+Mission:
+- Generate a per-run verifier at the generated verifier path above.
+- Reduce false positives with conservative, reproducible, low-impact checks.
+- Do not turn public exploit intelligence into a claim of target exploitability.
+
+Hard output contract:
+- Do not create or update scripts/verify_vulns.py.
+- Do not write data/output/vuln_validation_queue.csv or any queue CSV.
+- Dry-run must not contact the target and must write only {plan_path}.
+- Live mode must write only JSONL verification results to {results_path}.
+- The stable wrapper applies results, recalculates risk, and exports reports.
+- Generated code must accept every CLI flag listed in docs/VERIFY.md.
+- Generated code must not self-approve the approval manifest.
+
+Stable wrapper commands after generation:
+  {py} {lifecycle_script} --mode {mode_label} --verifier-file {verify_script} prepare {target_display}
+  {py} {lifecycle_script} --mode {mode_label} --verifier-file {verify_script} dry-run {target_display}
+  {py} {lifecycle_script} --mode {mode_label} --verifier-file {verify_script} approve {target_display}
+  {py} {lifecycle_script} --mode {mode_label} --verifier-file {verify_script} run {target_display}
+
+After approved live run, the wrapper calls {apply_results_script}. Then the operator can export:
+  {py} {s_export}
+  {py} {s_json}
+  {py} {s_ai_context}
+"""
+
+    greybox_prompt = """
+Greybox-specific rules:
+1. Read authentication only from VA_AUTH_COOKIE or VA_AUTH_HEADER at runtime. Do not paste the secret into source code, terminal output, report files, or logs.
+2. Apply auth only to same-origin URLs that are in the declared assessment scope.
+3. Prefer HEAD/GET/read-only requests. POST is allowed only when it is documented as safe and required to fetch a page already listed by scanner evidence.
+4. Do not submit forms, change settings, create content, trigger workflows, upload files, or test CSRF by performing state changes.
+5. Do not attempt login bypass, default-password login, brute force, MFA bypass, or role escalation.
+6. For authenticated findings, prove access-context presence by reading page/header/DOM/token state only.
+7. Use concurrency=1 for authenticated requests and back off immediately on authorization errors or server stress signals.
+
+Greybox examples of acceptable proof:
+- Missing security cookie flag: authenticated response sets the named cookie without the expected flag.
+- Missing security header: authenticated in-scope response lacks the header and scanner evidence identifies the same URL.
+- CSRF weakness: form lacks anti-CSRF token or token is static, based on read-only HTML inspection only.
+- Sensitive authenticated URL exposure: the exact scanner URL is reachable and contains non-secret structural proof after redaction.
+- CVE/version issue: authenticated admin/status page or service banner confirms vulnerable product/version and known fixed version boundary.
+"""
+
+    blackbox_prompt = """
+Blackbox-specific rules:
+1. Unauthenticated production-safe verification only.
+2. Do not use credentials, default-password checks, brute force, session fixation, account registration, or authenticated-only endpoints.
+3. Prefer HEAD/GET/passive HTTP checks, TLS checks, and exact service/version checks.
+4. Do not submit web forms unless the action is clearly read-only and limited to retrieving the same public page already referenced by scanner evidence.
+5. For default credential findings, do not attempt login. Classify as NEEDS_MANUAL_REVIEW unless scanner evidence already proves successful authorized authentication.
+6. For RCE, deserialization, SSRF, file-read, upload, or backdoor-class findings, do not send PoC payloads on production. Confirm only through safe version/config evidence or scanner active proof; otherwise SKIPPED_SAFE_MODE or NEEDS_MANUAL_REVIEW.
+7. For network services, probe only the exact port in the row when necessary and do not enumerate unrelated ports or services.
+
+Blackbox examples of acceptable proof:
+- Directory listing: exact public URL returns an index/listing page without recursive crawling.
+- Missing security header: public in-scope response lacks the header.
+- TLS weakness: TLS/cipher output confirms the weak configuration on the exact host:port.
+- CVE/version issue: public banner or response header confirms vulnerable product/version and known fixed version boundary.
+- Public exploit/module found for CVE: keep as exploit_intel only; verification_status stays NOT_VERIFIED until target-specific proof exists.
+"""
+
+    implementation_prompt = f"""
+Implementation requirements:
+1. Implement helpers: validate_scope, redact_secret, safe_request, safe_subprocess, classify_finding, verify_web_finding, verify_tls_finding, verify_service_or_cve_finding, write_plan, write_result.
+2. Parse JSONL records and preserve the finding id from AI context. Do not infer IDs from row order when an id exists.
+3. Normalize URLs safely. Reject different hosts, local pivots, private metadata destinations, file/data schemes, and ambiguous redirects.
+4. Redact every secret-like value before printing or writing evidence.
+5. Keep all requests bounded: timeout <= 10 seconds, max 1 retry, concurrency 1, small response body capture.
+6. Make decisions conservative. Ambiguous, unsafe, fragile-device, or context-missing findings become NEEDS_MANUAL_REVIEW or SKIPPED_SAFE_MODE.
+7. After writing the verifier, do not run live verification. Run only:
+   {py} -m py_compile {verify_script}
+   {py} {policy_script} {verify_script}
+   {py} {lifecycle_script} --mode {mode_label} --verifier-file {verify_script} dry-run {target_display}
+8. Print the dry-run summary and stop for operator approval.
+"""
 
     print("\n" + "="*70)
-
-    if mode == 'GREYBOX':
-        # ====================================================================
-        # PROMPT GREYBOX AUDITOR (Production-Safe, Authenticated)
-        # ====================================================================
-        print(f"{C.GREEN}{C.BOLD}🛡️  PROMPT - GREYBOX AUDITOR ENGINE (PRODUCTION-SAFE){C.END}")
-        print("="*70)
-
-        print(f"⚠️  YOU ARE IN GREYBOX MODE (PRODUCTION-SAFE). DO NOT CRASH THE TARGET.")
-        print(f"You are a Production-Safe Security Auditor – Authenticated, Low-Impact, Exploit-Path Required.")
-        print(f"TARGET INPUT: DYNAMIC (via sys.argv[1])")
-        print(f"MISSION: Verify EVERY finding in 'data/output/vuln_validation_queue.csv' using AUTHENTICATED requests with LOW-RISK payloads.")
-        print(f"NEVER use aggressive/destructive payloads. NEVER attack OS/Infrastructure services directly.")
-        print(f"TOOL CONTEXT: Nuclei={ts['nuclei']}, SQLMap={ts['sqlmap']}, WPScan={ts['wpscan']}, Nmap={ts['nmap']}")
-        if auth_cookie:
-            print(f"AUTH_COOKIE: {auth_cookie}")
-
-        print("\n# --- CORE PHILOSOPHY (PRODUCTION-SAFE AUDIT) ---")
-        print("1. **SEQUENTIAL PROCESSING**: One row at a time.")
-        print("2. **RESUME**: Skip if 'agent_status' is not empty/NaN/'WAITING'.")
-        print("3. **RESULT CLASSIFICATION (PRODUCTION-SAFE)**:")
-        print("   - 'REPRODUCED' -> Clear PoC success WITH LOW-RISK payload (nuclei hit, safe SQLi detection, traversal leak).")
-        print("   - 'CONFIRMED_PRESENT' -> Vulnerable condition + CLEAR EXPLOIT PATH (e.g. weak cipher confirmed).")
-        print("   - 'CONFIRMED_INFRA_NO_EXPLOIT' -> Infrastructure/OS finding from OpenVAS. Trusted by Admin Credential. DO NOT ATTACK.")
-        print("   - 'CHECKED_NO_EXPLOIT' -> Tested but NO exploit proof.")
-        print("   - 'NOT_REPRODUCED' / 'ERROR'.")
-        print("4. **EVIDENCE RULES (CONCISE)**: ONLY include DIRECT proof. Extract the LAST 800 chars (not the first 800) for tools like sqlmap/wpscan to capture actual payloads, skipping the startup banner. No proof = 'CHECKED_NO_EXPLOIT'.")
-        print("5. **CVE EXHAUSTIVE LOOP**: LOOP through EVERY CVE one by one using `nuclei -id [CVE]`. Only 'REPRODUCED' if clear sign of exploit.")
-        print("6. **CLEAN**: Strip ANSI color codes (Regex: `\\\\x1b\\\\[[0-9;]*[mGKF]`).")
-
-        print("\n# --- INFRASTRUCTURE BYPASS RULE (CRITICAL) ---")
-        print("RULE: You are testing a PRODUCTION environment with TRUSTED Admin Credentials.")
-        print("If the finding's 'url_or_port' is a raw TCP port (21, 22, 23, 25, 445, 512, 513, 514, 5432, 8787, etc.)")
-        print("OR the finding name contains OS/Infra keywords (Samba, OpenSSH, Kernel, vsftpd, ProFTPD, SSL Certificate, TLS, dRuby, rlogin, rexec, PostgreSQL EOL, OS EOL):")
-        print("   -> IMMEDIATELY return status='CONFIRMED_INFRA_NO_EXPLOIT', evidence='Trusted Credentialed Admin Data. Skipped to prevent Production disruption.'")
-        print("   -> DO NOT run nuclei, nmap, sqlmap, or any network probe on these findings.")
-        print("   -> ONLY focus your energy on HTTP/HTTPS Web Application findings.")
-
-        print("\n# --- THE DECISION MATRIX (Production-Safe) ---")
-
-        print("\n[LAYER 0] INFRA SHIELD – Auto-Skip OS/Network Findings")
-        print("   -> ACTION: Check if finding is Infrastructure/OS (non-HTTP port or OS-level CVE).")
-        print("   -> RESULT: If yes, return 'CONFIRMED_INFRA_NO_EXPLOIT'. Skip ALL subsequent layers.")
-
-        print("\n[LAYER 1] SNIPER – Full CVE Loop with Nuclei (Authenticated)")
-        print("   -> ACTION: LOOP ALL CVEs found in column -> Run nuclei one by one.")
-        if auth_cookie:
-            print(f"   -> MUST USE: nuclei -id [CVE] -target [URL] -H 'Cookie: {auth_cookie}' -et tags:dos,intrusive")
-        else:
-            print("   -> MUST USE: nuclei -id [CVE] -target [URL] -et tags:dos,intrusive")
-        print("   -> NOTE: -et tags:dos,intrusive EXCLUDES destructive templates to protect Production.")
-        print("   -> RESULT: ONLY 'REPRODUCED' if output shows clear exploit (matched/leak/[vulnerable]).")
-
-        print("\n[LAYER 2] SAFE ARTILLERY – Low-Risk Injection Proof")
-        if auth_cookie:
-            print(f"   -> ACTION: sqlmap --level 1 --risk 1 --batch --cookie='{auth_cookie}' --technique=BEU")
-        else:
-            print("   -> ACTION: sqlmap --level 1 --risk 1 --batch --technique=BEU")
-        print("   -> ⚠️  ABSOLUTELY DO NOT use --risk 2 or --risk 3. This is Production!")
-        print("   -> --technique=BEU limits to Boolean/Error/Union (NO stacked queries that modify data).")
-        print("   -> RESULT: ONLY 'REPRODUCED' if injectable or execution success.")
-
-        print("\n[LAYER 3] WEB SURGEON – Authenticated Exploit-Path Checks")
-        print("   -> ACTION: 403 Bypass (Headers), Path Traversal (../../etc/passwd, win.ini, web.xml).")
-        if auth_cookie:
-            print(f"   -> ALL requests.get/post MUST include headers={{'Cookie': '{auth_cookie}'}}")
-        print("   -> MUST test both root path AND parameters (?file=, ?page=, ?path=, ?id=).")
-        print("   -> RESULT: ONLY 'REPRODUCED' if leaks sensitive file/content or bypass works.")
-
-        print("\n[LAYER 4] INFRA – DISABLED IN GREYBOX MODE")
-        print("   -> All infrastructure scanning is handled by Layer 0 (Auto-Skip).")
-        print("   -> Nmap is ONLY used for HTTP service fingerprinting if absolutely needed.")
-        print("   -> Use: nmap -sV -Pn --script 'safe' -p [PORT] (safe scripts only).")
-
-        print("\n# --- EXECUTION PLAN (ACT) ---")
-        print("WRITE 'scripts/verify_vulns.py':")
-        print("1. Normalize target from `sys.argv[1]`.")
-        print("2. Loop rows, skip processed, save CSV after EVERY row.")
-        print("3. Implement LAYER 0 FIRST: Check if finding is Infra/OS -> auto-skip.")
-        print("4. Implement caching: CMD_CACHE and NMAP_CACHE.")
-        if auth_cookie:
-            print(f"5. HARDCODE session cookie '{auth_cookie}' into ALL HTTP requests and tool commands.")
-        else:
-            print("5. No cookie provided. Proceed without authentication headers.")
-        print("6. implement `check_403_bypass(target)` with 12+ techniques. ALL requests must carry Cookie header.")
-        print("7. implement `check_path_traversal(target)` with 22+ payloads. MUST test root path AND parameters (?file=, ?page=, ?id=). ALL requests must carry Cookie header.")
-        print("8. analyze_row(row): Layer 0 (Infra Skip) -> Layer 1 (Nuclei) -> Layer 2 (Safe SQLMap) -> Layer 3 (Web Surgeon).")
-        print("9. Evidence: Concise proof only. Write a robust `extract_evidence` that scans from the BOTTOM up to capture the final payload/success line, completely ignoring ASCII banners.")
-
-    else:
-        # ====================================================================
-        # PROMPT BLACKBOX PENTEST V2 — ELITE FULL COVERAGE
-        # ====================================================================
-        print(f"{C.HEADER}{C.BOLD}🚀 PROMPT - ELITE SECURITY AUDIT ENGINE V2 (FULL COVERAGE){C.END}")
-        print("="*70)
-
-        print(f"You are an Elite Security Audit Engine V2 – Strict Proof-Only, Exploit-Path Required, No Version Assumptions.")
-        print(f"TARGET INPUT: DYNAMIC (via sys.argv[1])")
-        print(f"MISSION: Verify EVERY finding in 'data/output/vuln_validation_queue.csv' with EXTREME FOCUS ON REPRODUCIBLE EXPLOIT PROOF.")
-        print(f"NEVER confirm a vulnerability based solely on version detection, banner leak, or vulners listing unless there is CLEAR EXPLOIT PATH or PoC success.")
-        print(f"TOOL CONTEXT: Nuclei={ts['nuclei']}, SQLMap={ts['sqlmap']}, WPScan={ts['wpscan']}, Nmap={ts['nmap']}")
-
-        print("\n# --- CORE PHILOSOPHY (PROOF & EXPLOIT-PATH ONLY) ---")
-        print("1. **SEQUENTIAL PROCESSING**: One row at a time.")
-        print("2. **RESUME**: Skip if 'agent_status' is not empty/NaN/'WAITING'.")
-        print("3. **RESULT CLASSIFICATION (VERY STRICT)**:")
-        print("   - 'REPRODUCED' -> Clear PoC success (nuclei hit, payload success, traversal leak, 403 bypass -> 200, XSS reflection, SSRF callback).")
-        print("   - 'CONFIRMED_PRESENT' -> Vulnerable condition + CLEAR EXPLOIT PATH (e.g. weak cipher + downgrade possible).")
-        print("   - 'CHECKED_NO_EXPLOIT' -> Tested but NO exploit proof (only version/banner found, no path).")
-        print("   - 'NOT_REPRODUCED' / 'ERROR'.")
-        print("4. **EVIDENCE RULES (CONCISE)**: ONLY include DIRECT proof. Extract the LAST 800 chars (not the first 800) for tools like sqlmap/wpscan to capture actual payloads, skipping the startup banner. No proof = 'CHECKED_NO_EXPLOIT'.")
-        print("5. **CVE EXHAUSTIVE LOOP**: LOOP through EVERY CVE one by one using `nuclei -id [CVE]`. Only 'REPRODUCED' if clear sign of exploit.")
-        print("6. **CLEAN**: Strip ANSI color codes (Regex: `\\\\\\\\x1b\\\\\\\\[[0-9;]*[mGKF]`).")
-
-        print("\n# --- SMART URL EXTRACTION RULE (CRITICAL) ---")
-        print("When building the target URL for injection tools (sqlmap, XSS, SSRF):")
-        print("  - Check the 'description' and 'url_or_port' columns for FULL URLs with parameters (e.g., /page.php?id=1).")
-        print("  - If found, use THAT specific URL as the injection target, NOT the bare root domain.")
-        print("  - If only a port number is given, construct http://TARGET_IP:PORT/ and spider for injectable endpoints first.")
-        print("  - For phpMyAdmin findings: target http://TARGET_IP/phpmyadmin/ or http://TARGET_IP/phpMyAdmin/.")
-
-        print("\n# --- RETRY & FALLBACK LOGIC ---")
-        print("  - If any tool returns 'TIMEOUT': Retry ONCE with 2x timeout.")
-        print("  - If 'connection refused': Try switching http <-> https, or try the other common ports (80, 443, 8080, 8443).")
-        print("  - If tool binary not found: Use Python `requests` library as fallback for HTTP-based checks.")
-
-        print("\n# --- THE DECISION MATRIX (8-Layer Full Coverage) ---")
-
-        print("\n[LAYER 1] SNIPER – Full CVE Loop with Nuclei")
-        print("   -> ACTION: LOOP ALL CVEs found in column -> Run nuclei one by one.")
-        print("   -> If nuclei TIMEOUT: retry once with timeout=120.")
-        print("   -> RESULT: ONLY 'REPRODUCED' if output shows clear exploit (matched/leak/[vulnerable]).")
-
-        print("\n[LAYER 2A] HEAVY ARTILLERY – SQL Injection Proof")
-        print("   -> TRIGGER: finding_name OR description contains 'sql', 'injection', 'query', 'database'.")
-        print("   -> ACTION: Extract the FULL URL with parameters from the CSV row (description/url_or_port). If no params found, try common endpoints: /index.php?id=1, /login.php?user=test, /page.php?id=1.")
-        print("   -> COMMAND: sqlmap -u '[FULL_URL_WITH_PARAMS]' --level 3 --risk 3 --batch --forms --crawl=2")
-        print("   -> NOTE: --forms makes sqlmap auto-discover HTML forms. --crawl=2 finds nearby injectable pages.")
-        print("   -> FALLBACK: wpscan --url [URL] --enumerate vp,vt,tt,u (if 'wordpress' in description).")
-        print("   -> RESULT: ONLY 'REPRODUCED' if 'is vulnerable' or 'injectable' appears in output.")
-
-        print("\n[LAYER 2B] XSS HUNTER – Cross-Site Scripting Proof")
-        print("   -> TRIGGER: finding_name OR description contains 'xss', 'cross-site', 'scripting', 'reflected', 'stored'.")
-        print("   -> ACTION: Extract the target URL. Test these payloads via Python requests on ALL discovered parameters:")
-        print("      Payloads: '<script>alert(1)</script>', '\"><img src=x onerror=alert(1)>', '{{7*7}}', '<svg/onload=alert(1)>', 'javascript:alert(1)'")
-        print("   -> Check if the EXACT payload string is REFLECTED UNENCODED in the HTTP response body.")
-        print("   -> Also run: nuclei -tags xss -target [URL] (uses nuclei's built-in XSS templates).")
-        print("   -> RESULT: 'REPRODUCED' ONLY if payload is reflected without HTML encoding in response.")
-
-        print("\n[LAYER 3A] WEB SURGEON – 403 Bypass & Path Traversal")
-        print("   -> ACTION: 403 Bypass (12+ Headers), Path Traversal (22+ payloads).")
-        print("   -> APACHE FALLBACK: Try PoC for CVE-2021-41773 style path traversal.")
-        print("   -> MUST test both root path AND parameters (?file=, ?page=, ?path=, ?include=, ?template=, ?id=).")
-        print("   -> RESULT: ONLY 'REPRODUCED' if leaks sensitive file/content (root:x:0:0, [extensions], <web-app>) or bypass works.")
-
-        print("\n[LAYER 3B] SSRF PROBE – Server-Side Request Forgery")
-        print("   -> TRIGGER: finding_name OR description contains 'ssrf', 'request forgery', 'url', 'redirect', 'proxy', 'fetch'.")
-        print("   -> ACTION: Use Python requests to inject these SSRF payloads into URL-type parameters (?url=, ?redirect=, ?next=, ?dest=, ?uri=, ?path=):")
-        print("      - http://127.0.0.1:80/, http://localhost/, http://[::1]/, http://0x7f000001/")
-        print("      - http://169.254.169.254/latest/meta-data/ (AWS metadata)")
-        print("      - file:///etc/passwd")
-        print("   -> Check response for: 'root:x:0:0', 'ami-id', 'instance-id', localhost HTML content, or status 200 with body length change.")
-        print("   -> RESULT: 'REPRODUCED' if response leaks internal data or metadata.")
-
-        print("\n[LAYER 4] INFRA – Nmap with Exploit-Path Requirement")
-        print("   -> ACTION: nmap -sV -Pn -p [PORT] --script vulners,ssh2-enum-algos,ssl-enum-ciphers.")
-        print("   -> RESULT: ONLY 'CONFIRMED_PRESENT' if weak config + CLEAR EXPLOIT PATH (e.g. downgrade possible).")
-        print("   -> Default vulners version match alone = 'CHECKED_NO_EXPLOIT'.")
-
-        print("\n[LAYER 5] PROTOCOL SPECIALIST – Service-Specific PoC")
-        print("   -> TRIGGER: finding involves non-HTTP service (FTP, SSH, SMB, RMI, dRuby, rlogin, rexec).")
-        print("   -> ACTION (per service):")
-        print("      - vsftpd (port 21): Use Python socket to connect, send username ending with ':)' (smiley backdoor CVE-2011-2523). Check if port 6200 opens.")
-        print("      - ProFTPD (port 21): Send 'HELP' command via socket, parse banner for vulnerable version + try SITE CPFR/CPTO for arbitrary file copy.")
-        print("      - rlogin (port 513): Use Python socket, try rlogin with '-froot' to test passwordless root login.")
-        print("      - rexec (port 512): Use Python socket, try connecting with common creds (root:root, root:<empty>).")
-        print("      - dRuby (port 8787): Use Python socket to send DRb protocol probe. Check if it accepts method calls.")
-        print("      - SMB/Samba (port 445): Try 'smbclient -L //TARGET -N' (null session) to list shares without credentials.")
-        print("   -> RESULT: 'REPRODUCED' if backdoor/RCE is confirmed. 'CONFIRMED_PRESENT' if service responds to exploit conditions but no shell obtained.")
-
-        print("\n[LAYER 6] DESERIALIZATION & RCE HUNTER")
-        print("   -> TRIGGER: finding_name OR description contains 'deseriali', 'unserialize', 'rce', 'remote code', 'command execution', 'code injection', 'object injection'.")
-        print("   -> ACTION:")
-        print("      - PHP Unserialize: Send crafted serialized PHP object in POST body/Cookie. Check for error messages revealing deserialization attempt.")
-        print("      - Java (Tomcat/RMI): Use nuclei -tags rce,java -target [URL]. Also try ysoserial payloads if applicable.")
-        print("      - Python pickle: Send base64-encoded pickle payload. Check if server executes os.system() callback.")
-        print("   -> FALLBACK: Simple command injection tests: ; id, | id, `id`, $(id) appended to parameters. Check if 'uid=' appears in response.")
-        print("   -> RESULT: 'REPRODUCED' if command output or error trace confirms code execution.")
-
-        print("\n[LAYER 7] SAFETY NET – Default Classification")
-        print("   -> If ALL above layers fail to produce proof: return 'CHECKED_NO_EXPLOIT'.")
-        print("   -> TCP port open alone is NOT vulnerability proof.")
-
-        print("\n# --- EXECUTION PLAN (ACT) ---")
-        print("WRITE 'scripts/verify_vulns.py':")
-        print("1. Normalize target from `sys.argv[1]`.")
-        print("2. Loop rows, skip processed, save CSV after EVERY row.")
-        print("3. Implement caching: CMD_CACHE (store ALL command outputs) and NMAP_CACHE (store Nmap output PER PORT).")
-        print("4. Implement `extract_injectable_url(row)`: Parse 'description' and 'url_or_port' columns to find FULL URLs with parameters. Fallback to constructing URL from IP+port.")
-        print("5. Implement `check_403_bypass(target_url)` with 12+ header techniques + 10+ path mutations.")
-        print("6. Implement `check_path_traversal(target_url)` with 22+ payloads. Test BOTH root path AND common parameters (?file=, ?page=, ?include=, ?id=).")
-        print("7. Implement `check_xss_reflection(target_url, params)`: Send 5+ XSS payloads per parameter, check if reflected unencoded.")
-        print("8. Implement `check_ssrf(target_url, params)`: Send SSRF payloads to URL-type params, check for internal data leak.")
-        print("9. Implement `check_service_exploit(target_ip, port, service_name)`: Protocol-specific PoC (vsftpd backdoor, rlogin, smbclient null session, dRuby probe).")
-        print("10. Implement `check_deserialization(target_url)`: Command injection tests (; id, | id, `id`, $(id)) + PHP serialized object probe.")
-        print("11. analyze_row(row): 8-layer waterfall: Layer 1 (Nuclei) -> 2A (SQLi) -> 2B (XSS) -> 3A (403/LFI) -> 3B (SSRF) -> 4 (Nmap) -> 5 (Protocol PoC) -> 6 (Deser/RCE) -> 7 (Safety Net).")
-        print("12. Evidence: Write robust `extract_evidence(text, keyword)` that scans from BOTTOM UP to capture final payload/success line, ignoring ASCII banners.")
-
-    # --- PHẦN CHUNG CHO CẢ 2 MODE ---
-    print("\nFINALLY: Run the script.")
-    print(f"7. FINISH: Run '{py} {s_export}' then Run '{py} {s_json}'")
-    # --- KẾT THÚC NỘI DUNG PROMPT ---
-
+    print(f"{C.GREEN if mode == 'GREYBOX' else C.HEADER}{C.BOLD}PROMPT - PRODUCTION PRESENCE VERIFIER ({mode_label}){C.END}")
+    print("="*70)
+    print(common_prompt.strip())
+    print((greybox_prompt if mode == 'GREYBOX' else blackbox_prompt).strip())
+    print(implementation_prompt.strip())
     print(f"{C.CYAN}--------------------------------------------------{C.END}")
 
 def main():
@@ -904,15 +991,18 @@ def main():
                 u = input("👉 Target URL: ").strip()
                 # Hỏi Engagement Mode cho Process Only
                 print(f"\n{C.HEADER}{C.BOLD}[ ENGAGEMENT TYPE ]{C.END}")
-                print(f"  {C.RED}1. 🏴‍☠️ BLACKBOX PENTEST{C.END}")
-                print(f"  {C.GREEN}2. 🛡️  GREYBOX AUDITOR{C.END}")
+                print(f"  {C.RED}1. 🏴‍☠️ BLACKBOX VERIFIER{C.END} — Unauthenticated, Production-Safe")
+                print(f"  {C.GREEN}2. 🛡️  GREYBOX VERIFIER{C.END}  — Authenticated, Production-Safe")
                 eg = input(f"{C.BOLD}👉 Choose (1-2, Default: 1): {C.END}").strip() or '1'
                 scan_context = {'mode': 'BLACKBOX', 'cookie': None}
                 if eg == '2':
                     scan_context['mode'] = 'GREYBOX'
+                    print(f"   {C.CYAN}ℹ️  Cookie/token chỉ dùng qua biến môi trường runtime VA_AUTH_COOKIE và không được in ra prompt/report.{C.END}")
                     cookie = input(f"{C.BOLD}👉 Session Cookie (VD: PHPSESSID=abc123): {C.END}").strip()
                     if cookie:
                         scan_context['cookie'] = cookie
+                        os.environ['VA_AUTH_COOKIE'] = cookie
+                        Debugger.success("Auth cookie/token received (redacted; not printed).")
                 run_processing_phase()
                 run_threat_intel_phase(u, missing_tools, scan_context)
                 break
