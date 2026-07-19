@@ -2,7 +2,7 @@
 
 # ====================================================================
 # 🛡️  Automated Vulnerability Management Pipeline - Setup Script
-# Target OS: Ubuntu 24.04 / Debian-based
+# Target OS: Ubuntu 22.04/24.04/26.04 or Ubuntu-compatible
 # ====================================================================
 
 # Prevent running the script directly as root
@@ -24,18 +24,48 @@ echo -e "${BLUE}====================================================${NC}"
 echo -e "${BLUE}🚀 Starting Project Setup & Tool Installation...${NC}"
 echo -e "${BLUE}====================================================${NC}"
 
-# 1. Update System & Install Docker
-echo -e "\n${GREEN}[1/8] Updating system packages and installing Docker...${NC}"
+# 1. Update System & Install OS prerequisites
+echo -e "\n${GREEN}[1/8] Updating system packages and installing OS prerequisites...${NC}"
 sudo apt update && sudo apt upgrade -y
-sudo apt install -y docker.io docker-compose-v2 python3 python3-pip python3-venv \
-    nmap sqlmap nikto curl git unzip ruby-full \
+sudo apt install -y ca-certificates curl python3 python3-pip python3-venv \
+    nmap sqlmap nikto git unzip ruby-full \
     libxml2-dev libxslt1-dev python3-dev \
     build-essential libcurl4-openssl-dev zlib1g-dev
 
-# Ensure user is in docker group (optional but helpful)
-if ! groups $USER | grep -q "\bdocker\b"; then
-    echo -e "   ℹ️  Adding user to docker group (requires logout/login to take effect fully for manual docker runs)..."
-    sudo usermod -aG docker $USER
+# Install Docker Engine from Docker's official apt repository
+echo -e "   Installing Docker Engine from Docker's official apt repository..."
+CONFLICTING_DOCKER_PACKAGES=$(dpkg --get-selections docker.io docker-compose docker-compose-v2 docker-doc podman-docker containerd runc 2>/dev/null | cut -f1 || true)
+if [ -n "$CONFLICTING_DOCKER_PACKAGES" ]; then
+    echo -e "   Removing conflicting Docker packages: $CONFLICTING_DOCKER_PACKAGES"
+    sudo apt remove -y $CONFLICTING_DOCKER_PACKAGES
+fi
+
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+
+sudo tee /etc/apt/sources.list.d/docker.sources > /dev/null <<EOF
+Types: deb
+URIs: https://download.docker.com/linux/ubuntu
+Suites: $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")
+Components: stable
+Architectures: $(dpkg --print-architecture)
+Signed-By: /etc/apt/keyrings/docker.asc
+EOF
+
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+if command -v systemctl &> /dev/null; then
+    sudo systemctl start docker
+fi
+
+# Ensure user is in docker group
+if ! getent group docker > /dev/null; then
+    sudo groupadd docker
+fi
+if ! groups "$USER" | grep -q "\bdocker\b"; then
+    echo -e "   ℹ️  Adding user to docker group. The script will run newgrp docker at the end."
+    sudo usermod -aG docker "$USER"
 fi
 
 # 2. Install Essential Tools via APT & Ruby
