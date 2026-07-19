@@ -21,6 +21,9 @@ Pipeline hiện tập trung vào các việc sau:
 7. Tính risk score và priority kèm lý do.
 8. Xuất Excel/JSON cho nội bộ và bản đã lược bỏ dữ liệu nhạy cảm để chia sẻ an toàn hơn.
 9. Xuất AI context dạng JSONL để agent đọc ít tốn token hơn so với CSV thô.
+10. Cung cấp bốn baseline OpenVAS/Greenbone theo nhóm tài sản trong
+    `OpenVas-config/`: Applications, Network Devices, Security Devices,
+    Workstations/Servers.
 
 Nguyên tắc quan trọng:
 
@@ -187,6 +190,10 @@ Lưu ý: `Approved Safe Verification` chỉ được chạy sau `py_compile`, po
 
 ```text
 tool-scan-pipeline-security/
+├── OpenVas-config/
+│   ├── README.md                   # Import/runbook cho 4 profile OpenVAS
+│   ├── scan-configs/               # 4 Greenbone Scan Config XML
+│   └── port-lists/                 # 4 baseline Port List + 1 optional full TCP/UDP
 ├── data/
 │   ├── raw/                         # ZAP JSON, OpenVAS XML, artifact tạm của scanner
 │   ├── normalized/                  # CSV đã parse từ từng scanner
@@ -230,6 +237,7 @@ tool-scan-pipeline-security/
 │   ├── show_stats.py
 │   └── test_portability.py
 ├── tests/
+│   ├── test_openvas_configs.py
 │   └── test_pipeline_regression.py
 ├── requirements.txt
 ├── setup.sh
@@ -240,6 +248,22 @@ tool-scan-pipeline-security/
 ---
 
 ## 7. Cài đặt và chạy
+
+### OpenVAS/Greenbone role configs
+
+Bộ cấu hình import cho Greenbone nằm trong:
+
+```bash
+OpenVas-config/
+```
+
+Đọc `OpenVas-config/README.md` trước khi import. Scan Config XML không tự bind
+Port List; Port List được chọn khi tạo Target. Bốn baseline hiện đã được
+cross-check với Greenbone container local, tắt brute force/default account,
+exclude DoS, thêm denylist OID default-credential active theo feed, và giảm
+timing/parallel/delay cho network/security appliance. Port List mặc định vẫn là
+curated baseline; `portlist-full-tcp-udp.xml` chỉ dùng cho maintenance window
+hoặc deep coverage đã được phê duyệt.
 
 ### Cài đặt
 

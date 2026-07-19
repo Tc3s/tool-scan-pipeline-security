@@ -1,0 +1,229 @@
+<?xml version='1.0' encoding='utf-8'?>
+<get_port_lists_response status="200" status_text="OK">
+  <port_list id="db16db9e-7361-50cf-9813-5df5f631dabe">
+    <owner>
+      <name>admin</name>
+    </owner>
+    <name>VA - Network Devices - Management Baseline</name>
+    <comment>Privileged TCP plus common network-management ports. Add vendor-specific and non-standard management ports from the asset inventory.</comment>
+    <creation_time>2026-07-14T11:43:16Z</creation_time>
+    <modification_time>2026-07-14T11:43:16Z</modification_time>
+    <writable>1</writable>
+    <in_use>0</in_use>
+    <permissions>
+      <permission>
+        <name>Everything</name>
+      </permission>
+    </permissions>
+    <port_count>
+      <all>1057</all>
+      <tcp>1041</tcp>
+      <udp>16</udp>
+    </port_count>
+    <port_ranges>
+      <port_range id="cc7efcf2-3159-5a49-a3ab-54f5fd34333c">
+        <start>1</start>
+        <end>1024</end>
+        <type>TCP</type>
+        <comment />
+      </port_range>
+      <port_range id="95a0685c-0e71-572f-b188-0b57c3bcbefa">
+        <start>2000</start>
+        <end>2000</end>
+        <type>TCP</type>
+        <comment />
+      </port_range>
+      <port_range id="6016b038-05a3-5ebc-bc27-527e6a31cec7">
+        <start>3000</start>
+        <end>3000</end>
+        <type>TCP</type>
+        <comment />
+      </port_range>
+      <port_range id="8010c850-ec0d-526b-a349-f1882c202162">
+        <start>4433</start>
+        <end>4433</end>
+        <type>TCP</type>
+        <comment />
+      </port_range>
+      <port_range id="162b977c-d776-5874-abf4-3e5deefea247">
+        <start>4786</start>
+        <end>4786</end>
+        <type>TCP</type>
+        <comment />
+      </port_range>
+      <port_range id="02b64107-3662-5191-b083-e8fdd78bfd2f">
+        <start>5000</start>
+        <end>5000</end>
+        <type>TCP</type>
+        <comment />
+      </port_range>
+      <port_range id="2f4c2617-b7d0-5c9f-87a5-6db862536da0">
+        <start>7547</start>
+        <end>7547</end>
+        <type>TCP</type>
+        <comment />
+      </port_range>
+      <port_range id="cff8e466-7e05-5dd8-9485-969b84a7da16">
+        <start>8000</start>
+        <end>8000</end>
+        <type>TCP</type>
+        <comment />
+      </port_range>
+      <port_range id="710a0720-12a5-5f63-a27a-89bc81124c92">
+        <start>8080</start>
+        <end>8081</end>
+        <type>TCP</type>
+        <comment />
+      </port_range>
+      <port_range id="7e218b63-ee60-54b3-9300-f69dda75b29c">
+        <start>8291</start>
+        <end>8291</end>
+        <type>TCP</type>
+        <comment />
+      </port_range>
+      <port_range id="21ab79f0-e641-5208-beb0-41d06b26248d">
+        <start>8443</start>
+        <end>8443</end>
+        <type>TCP</type>
+        <comment />
+      </port_range>
+      <port_range id="b1cf19fd-e408-5f5d-b6ab-b1f7b69b2508">
+        <start>8728</start>
+        <end>8729</end>
+        <type>TCP</type>
+        <comment />
+      </port_range>
+      <port_range id="9a78ef63-fa85-5a8d-bdaf-a216eda77bec">
+        <start>8888</start>
+        <end>8888</end>
+        <type>TCP</type>
+        <comment />
+      </port_range>
+      <port_range id="1bab2c36-d549-5b19-a824-7f7be7f9dc68">
+        <start>9443</start>
+        <end>9443</end>
+        <type>TCP</type>
+        <comment />
+      </port_range>
+      <port_range id="5ca72af3-801a-5c20-9a30-7cff3288d646">
+        <start>10000</start>
+        <end>10000</end>
+        <type>TCP</type>
+        <comment />
+      </port_range>
+      <port_range id="cb7dd551-e540-5da1-8132-83f87c207c94">
+        <start>10443</start>
+        <end>10443</end>
+        <type>TCP</type>
+        <comment />
+      </port_range>
+      <port_range id="58039b41-f43d-5273-91e6-f9aab83c9e5d">
+        <start>53</start>
+        <end>53</end>
+        <type>UDP</type>
+        <comment />
+      </port_range>
+      <port_range id="fb74ee85-ab52-5fac-93c2-d993b0f1f5e9">
+        <start>67</start>
+        <end>69</end>
+        <type>UDP</type>
+        <comment />
+      </port_range>
+      <port_range id="8d42f5c6-2c43-5397-ae73-631b7659a455">
+        <start>123</start>
+        <end>123</end>
+        <type>UDP</type>
+        <comment />
+      </port_range>
+      <port_range id="1a261c4d-5f83-55db-a736-042b2b667366">
+        <start>161</start>
+        <end>162</end>
+        <type>UDP</type>
+        <comment />
+      </port_range>
+      <port_range id="4edd6951-cb0a-58c7-8cad-10c7da5d2b4a">
+        <start>500</start>
+        <end>500</end>
+        <type>UDP</type>
+        <comment />
+      </port_range>
+      <port_range id="27b3ff33-2de5-5f79-995c-0cf08675b24b">
+        <start>514</start>
+        <end>514</end>
+        <type>UDP</type>
+        <comment />
+      </port_range>
+      <port_range id="726f8c0d-b6a8-5836-b02c-2ec3e53cae10">
+        <start>520</start>
+        <end>520</end>
+        <type>UDP</type>
+        <comment />
+      </port_range>
+      <port_range id="07fdf2b9-e705-5022-8a6c-b82c2e08b6d1">
+        <start>1194</start>
+        <end>1194</end>
+        <type>UDP</type>
+        <comment />
+      </port_range>
+      <port_range id="29fe7e02-0c2e-5e46-a73b-609ba9520a3f">
+        <start>1701</start>
+        <end>1701</end>
+        <type>UDP</type>
+        <comment />
+      </port_range>
+      <port_range id="e97c34d2-3197-5d93-9957-43d9c805310e">
+        <start>1812</start>
+        <end>1813</end>
+        <type>UDP</type>
+        <comment />
+      </port_range>
+      <port_range id="9be48d66-9da1-55be-8497-abe0013e1281">
+        <start>4500</start>
+        <end>4500</end>
+        <type>UDP</type>
+        <comment />
+      </port_range>
+      <port_range id="da1df59a-bf2a-5dfe-889c-2799c3b55943">
+        <start>4789</start>
+        <end>4789</end>
+        <type>UDP</type>
+        <comment />
+      </port_range>
+    </port_ranges>
+    <predefined>0</predefined>
+    <deprecated>0</deprecated>
+  </port_list>
+  <filters id="">
+    <term>first=1 rows=1000 uuid=db16db9e-7361-50cf-9813-5df5f631dabe sort=name</term>
+    <keywords>
+      <keyword>
+        <column>first</column>
+        <relation>=</relation>
+        <value>1</value>
+      </keyword>
+      <keyword>
+        <column>rows</column>
+        <relation>=</relation>
+        <value>1000</value>
+      </keyword>
+      <keyword>
+        <column>uuid</column>
+        <relation>=</relation>
+        <value>db16db9e-7361-50cf-9813-5df5f631dabe</value>
+      </keyword>
+      <keyword>
+        <column>sort</column>
+        <relation>=</relation>
+        <value>name</value>
+      </keyword>
+    </keywords>
+  </filters>
+  <sort>
+    <field>name<order>ascending</order>
+    </field>
+  </sort>
+  <port_lists start="1" max="1000" />
+  <port_list_count>1<filtered>1</filtered>
+    <page>1</page>
+  </port_list_count>
+</get_port_lists_response>

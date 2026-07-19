@@ -1,0 +1,211 @@
+<?xml version='1.0' encoding='utf-8'?>
+<get_port_lists_response status="200" status_text="OK">
+  <port_list id="a0ff929f-d4d0-55d3-986c-8493dd1c1bc0">
+    <owner>
+      <name>admin</name>
+    </owner>
+    <name>VA - Security Devices - Management and VPN Baseline</name>
+    <comment>Privileged TCP plus common security-appliance management and VPN ports. Add actual vendor ports before production use.</comment>
+    <creation_time>2026-07-14T11:43:16Z</creation_time>
+    <modification_time>2026-07-14T11:43:16Z</modification_time>
+    <writable>1</writable>
+    <in_use>0</in_use>
+    <permissions>
+      <permission>
+        <name>Everything</name>
+      </permission>
+    </permissions>
+    <port_count>
+      <all>1054</all>
+      <tcp>1039</tcp>
+      <udp>15</udp>
+    </port_count>
+    <port_ranges>
+      <port_range id="5384a5d7-756b-5eb0-b13f-30e59c7ae2c2">
+        <start>1</start>
+        <end>1024</end>
+        <type>TCP</type>
+        <comment />
+      </port_range>
+      <port_range id="21ae439f-cb35-5048-b5d4-72d6550345d2">
+        <start>1194</start>
+        <end>1194</end>
+        <type>TCP</type>
+        <comment />
+      </port_range>
+      <port_range id="fd1e3997-5178-59a7-9cba-f5233802a17e">
+        <start>1812</start>
+        <end>1813</end>
+        <type>TCP</type>
+        <comment />
+      </port_range>
+      <port_range id="78d1b1c5-848f-57fc-af4e-ea8942bf108c">
+        <start>3128</start>
+        <end>3128</end>
+        <type>TCP</type>
+        <comment />
+      </port_range>
+      <port_range id="9a0390bc-a278-53b5-a388-5809ff07b3cf">
+        <start>4443</start>
+        <end>4443</end>
+        <type>TCP</type>
+        <comment />
+      </port_range>
+      <port_range id="07c0bbf5-847d-5d85-a5a4-8e9419c6225f">
+        <start>5000</start>
+        <end>5000</end>
+        <type>TCP</type>
+        <comment />
+      </port_range>
+      <port_range id="cca60574-5b7b-5d32-b578-3f8b87a4017f">
+        <start>7443</start>
+        <end>7443</end>
+        <type>TCP</type>
+        <comment />
+      </port_range>
+      <port_range id="661966f8-ddf9-5bd9-bbbc-1f0a4cf05665">
+        <start>8000</start>
+        <end>8000</end>
+        <type>TCP</type>
+        <comment />
+      </port_range>
+      <port_range id="3e292ad7-14eb-54f0-8864-197dc737ae4d">
+        <start>8080</start>
+        <end>8081</end>
+        <type>TCP</type>
+        <comment />
+      </port_range>
+      <port_range id="2ea63e6e-346c-5991-b3e0-0271cfb28a6f">
+        <start>8443</start>
+        <end>8443</end>
+        <type>TCP</type>
+        <comment />
+      </port_range>
+      <port_range id="7f77266d-1c77-5bf3-9564-c9699cd00a0e">
+        <start>8888</start>
+        <end>8888</end>
+        <type>TCP</type>
+        <comment />
+      </port_range>
+      <port_range id="7189a28c-1a1d-5684-a95e-4a34a95d97d3">
+        <start>9443</start>
+        <end>9443</end>
+        <type>TCP</type>
+        <comment />
+      </port_range>
+      <port_range id="2ecb35a0-81cd-555b-bd0b-df267d8c88fc">
+        <start>10000</start>
+        <end>10000</end>
+        <type>TCP</type>
+        <comment />
+      </port_range>
+      <port_range id="d8d353f6-76c4-544a-a0c8-3e9808c33ce4">
+        <start>10443</start>
+        <end>10443</end>
+        <type>TCP</type>
+        <comment />
+      </port_range>
+      <port_range id="ac1557e2-4d98-5881-9c16-d18079ba5b62">
+        <start>53</start>
+        <end>53</end>
+        <type>UDP</type>
+        <comment />
+      </port_range>
+      <port_range id="162277e8-32a4-586a-b9ac-93d065a8b011">
+        <start>67</start>
+        <end>69</end>
+        <type>UDP</type>
+        <comment />
+      </port_range>
+      <port_range id="e9d76455-bd9c-592d-b437-b20e49cb760e">
+        <start>123</start>
+        <end>123</end>
+        <type>UDP</type>
+        <comment />
+      </port_range>
+      <port_range id="9801565e-68e6-5946-ab75-ca65f7452553">
+        <start>161</start>
+        <end>162</end>
+        <type>UDP</type>
+        <comment />
+      </port_range>
+      <port_range id="86d4a549-635a-5c9f-84f7-8a0bb7948f3b">
+        <start>500</start>
+        <end>500</end>
+        <type>UDP</type>
+        <comment />
+      </port_range>
+      <port_range id="d3f8a9c4-058f-5ca6-a121-c3b78a4a49bf">
+        <start>514</start>
+        <end>514</end>
+        <type>UDP</type>
+        <comment />
+      </port_range>
+      <port_range id="f508f4c4-5368-5655-aa25-63f4b83f467b">
+        <start>1194</start>
+        <end>1194</end>
+        <type>UDP</type>
+        <comment />
+      </port_range>
+      <port_range id="0eaf587f-7af4-5a0c-a811-7e8344a62ec1">
+        <start>1701</start>
+        <end>1701</end>
+        <type>UDP</type>
+        <comment />
+      </port_range>
+      <port_range id="f05a0a4a-15a3-5f1a-898b-6a8f05bf7692">
+        <start>1812</start>
+        <end>1813</end>
+        <type>UDP</type>
+        <comment />
+      </port_range>
+      <port_range id="596669da-8cf8-5b1c-8ea2-63b737442beb">
+        <start>4500</start>
+        <end>4500</end>
+        <type>UDP</type>
+        <comment />
+      </port_range>
+      <port_range id="0d51a26f-30f4-5a28-b025-79a3b853c45e">
+        <start>4789</start>
+        <end>4789</end>
+        <type>UDP</type>
+        <comment />
+      </port_range>
+    </port_ranges>
+    <predefined>0</predefined>
+    <deprecated>0</deprecated>
+  </port_list>
+  <filters id="">
+    <term>first=1 rows=1000 uuid=a0ff929f-d4d0-55d3-986c-8493dd1c1bc0 sort=name</term>
+    <keywords>
+      <keyword>
+        <column>first</column>
+        <relation>=</relation>
+        <value>1</value>
+      </keyword>
+      <keyword>
+        <column>rows</column>
+        <relation>=</relation>
+        <value>1000</value>
+      </keyword>
+      <keyword>
+        <column>uuid</column>
+        <relation>=</relation>
+        <value>a0ff929f-d4d0-55d3-986c-8493dd1c1bc0</value>
+      </keyword>
+      <keyword>
+        <column>sort</column>
+        <relation>=</relation>
+        <value>name</value>
+      </keyword>
+    </keywords>
+  </filters>
+  <sort>
+    <field>name<order>ascending</order>
+    </field>
+  </sort>
+  <port_lists start="1" max="1000" />
+  <port_list_count>1<filtered>1</filtered>
+    <page>1</page>
+  </port_list_count>
+</get_port_lists_response>

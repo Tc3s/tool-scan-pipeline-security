@@ -1,0 +1,73 @@
+<?xml version='1.0' encoding='utf-8'?>
+<get_port_lists_response status="200" status_text="OK">
+  <port_list id="a40dbc6a-f819-5d71-bf6a-725dce3ee69b">
+    <owner>
+      <name>admin</name>
+    </owner>
+    <name>VA - Full TCP and UDP - Optional Approved Coverage</name>
+    <comment>Optional full TCP 1-65535 and UDP 1-65535 port list for approved maintenance-window scans only. Do not use as the production baseline for fragile network or security devices.</comment>
+    <creation_time>2026-07-20T00:00:00Z</creation_time>
+    <modification_time>2026-07-20T00:00:00Z</modification_time>
+    <writable>1</writable>
+    <in_use>0</in_use>
+    <permissions>
+      <permission>
+        <name>Everything</name>
+      </permission>
+    </permissions>
+    <port_count>
+      <all>131070</all>
+      <tcp>65535</tcp>
+      <udp>65535</udp>
+    </port_count>
+    <port_ranges>
+      <port_range id="04108dd5-daea-5e85-9c56-0d57367976b5">
+        <start>1</start>
+        <end>65535</end>
+        <type>TCP</type>
+        <comment />
+      </port_range>
+      <port_range id="cc9f8962-3be0-531c-951a-8d2a2954e7e6">
+        <start>1</start>
+        <end>65535</end>
+        <type>UDP</type>
+        <comment />
+      </port_range>
+    </port_ranges>
+    <predefined>0</predefined>
+    <deprecated>0</deprecated>
+  </port_list>
+  <filters id="">
+    <term>first=1 rows=1000 uuid=a40dbc6a-f819-5d71-bf6a-725dce3ee69b sort=name</term>
+    <keywords>
+      <keyword>
+        <column>first</column>
+        <relation>=</relation>
+        <value>1</value>
+      </keyword>
+      <keyword>
+        <column>rows</column>
+        <relation>=</relation>
+        <value>1000</value>
+      </keyword>
+      <keyword>
+        <column>uuid</column>
+        <relation>=</relation>
+        <value>a40dbc6a-f819-5d71-bf6a-725dce3ee69b</value>
+      </keyword>
+      <keyword>
+        <column>sort</column>
+        <relation>=</relation>
+        <value>name</value>
+      </keyword>
+    </keywords>
+  </filters>
+  <sort>
+    <field>name<order>ascending</order>
+    </field>
+  </sort>
+  <port_lists start="1" max="1000" />
+  <port_list_count>1<filtered>1</filtered>
+    <page>1</page>
+  </port_list_count>
+</get_port_lists_response>
