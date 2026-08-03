@@ -1138,6 +1138,49 @@ if __name__ == "__main__":
             self.assertEqual(updated.loc[0, "verification_status"], "CONFIRMED_PRESENT")
             self.assertIn("confirmed present on target", updated.loc[0, "risk_reason"])
 
+    def test_policy_validator_rejects_dynamic_reflection_and_dunders(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bad_reflection = Path(temp_dir) / "bad_reflection.py"
+            bad_reflection.write_text(
+                "import importlib\nmod = importlib.import_module('os')\ngetattr(mod, 'system')('id')\n",
+                encoding="utf-8",
+            )
+            result = validate_source(bad_reflection)
+            self.assertFalse(result["passed"])
+            self.assertTrue(any(f["rule"] in {"forbidden_module_import", "dynamic_reflection_bypass", "dynamic_import_attempt"} for f in result["findings"]))
+
+            bad_dunder = Path(temp_dir) / "bad_dunder.py"
+            bad_dunder.write_text(
+                "x = ().__class__.__subclasses__()\n",
+                encoding="utf-8",
+            )
+            result_dunder = validate_source(bad_dunder)
+            self.assertFalse(result_dunder["passed"])
+            self.assertTrue(any(f["rule"] == "forbidden_dunder_attribute" for f in result_dunder["findings"]))
+
+    def test_private_ip_detection(self):
+        from scripts.verification_contract import is_private_or_loopback_ip, canonical_target, ContractError
+        self.assertTrue(is_private_or_loopback_ip("127.0.0.1"))
+        self.assertTrue(is_private_or_loopback_ip("169.254.169.254"))
+        self.assertTrue(is_private_or_loopback_ip("10.0.0.1"))
+        self.assertTrue(is_private_or_loopback_ip("192.168.1.1"))
+        self.assertFalse(is_private_or_loopback_ip("8.8.8.8"))
+
+        with self.assertRaises(ContractError):
+            canonical_target("http://127.0.0.1/admin")
+
+    def test_false_positive_critical_risk_override_fixed(self):
+        from scripts.calculate_risk_priority import calculate_risk_for_row
+        row = {
+            "severity": "Critical",
+            "exploit_available": True,
+            "verification_status": "FALSE_POSITIVE",
+            "epss_score": 0.99,
+        }
+        res = calculate_risk_for_row(row)
+        self.assertEqual(res["priority"], "P4")
+        self.assertLessEqual(res["risk_score"], 39.0)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -48,7 +48,14 @@ FORBIDDEN_CALLS = {
     ("subprocess", "call"),
     ("subprocess", "check_call"),
     ("subprocess", "check_output"),
+    (None, "eval"),
+    (None, "exec"),
+    (None, "__import__"),
+    (None, "compile"),
 }
+
+FORBIDDEN_MODULES = {"os", "subprocess", "sys", "importlib", "shutil", "pty", "ctypes"}
+FORBIDDEN_DUNDER_ATTRS = {"__subclasses__", "__globals__", "__code__", "__builtins__", "__mro__"}
 
 REQUIRED_CONTRACT_STRINGS = {
     "--dry-run",
@@ -105,11 +112,26 @@ class PolicyVisitor(ast.NodeVisitor):
                         values.append(str(item.value))
         return values
 
+    def visit_Attribute(self, node: ast.Attribute) -> Any:
+        if node.attr in FORBIDDEN_DUNDER_ATTRS:
+            self.findings.append(Finding("critical", "forbidden_dunder_attribute", f"access to {node.attr}", node.lineno))
+        self.generic_visit(node)
+
     def visit_Call(self, node: ast.Call) -> Any:
         module, name = _attr_name(node.func)
         module, name = self._canonical_name(module, name)
-        if (module, name) in FORBIDDEN_CALLS:
-            self.findings.append(Finding("high", "forbidden_call", f"{module}.{name}", node.lineno))
+
+        if (module, name) in FORBIDDEN_CALLS or (None, name) in FORBIDDEN_CALLS:
+            self.findings.append(Finding("high", "forbidden_call", f"{module + '.' if module else ''}{name}", node.lineno))
+
+        if name in {"getattr", "setattr", "delattr"}:
+            literal_args = [arg.value for arg in node.args if isinstance(arg, ast.Constant)]
+            if any(str(arg) in {"system", "popen", "eval", "exec", "subprocess", "os", "__import__", "import_module"} for arg in literal_args):
+                self.findings.append(Finding("critical", "dynamic_reflection_bypass", f"dynamic {name} invocation", node.lineno))
+
+        if module == "importlib" or (module is None and name == "import_module"):
+            self.findings.append(Finding("high", "dynamic_import_attempt", "importlib.import_module invocation", node.lineno))
+
         if module == "subprocess" and name in {"run", "Popen"}:
             has_timeout = any(keyword.arg == "timeout" for keyword in node.keywords)
             for keyword in node.keywords:
@@ -131,6 +153,9 @@ class PolicyVisitor(ast.NodeVisitor):
         for alias in node.names:
             local_name = alias.asname or alias.name.split(".", 1)[0]
             self.import_aliases[local_name] = alias.name
+            root_module = alias.name.split(".", 1)[0]
+            if root_module in FORBIDDEN_MODULES:
+                self.findings.append(Finding("high", "forbidden_module_import", alias.name, node.lineno))
             if alias.name in {"pexpect", "paramiko"}:
                 self.findings.append(Finding("medium", "manual_review_import", alias.name, node.lineno))
             if alias.name in {"socket", "aiohttp"}:
@@ -142,10 +167,14 @@ class PolicyVisitor(ast.NodeVisitor):
             local_name = alias.asname or alias.name
             if node.module:
                 self.import_aliases[local_name] = f"{node.module}.{alias.name}"
-        if node.module in {"pexpect", "paramiko"}:
-            self.findings.append(Finding("medium", "manual_review_import", node.module, node.lineno))
-        if node.module in {"socket", "aiohttp"}:
-            self.findings.append(Finding("medium", "network_import_requires_review", node.module, node.lineno))
+        if node.module:
+            root_module = node.module.split(".", 1)[0]
+            if root_module in FORBIDDEN_MODULES:
+                self.findings.append(Finding("high", "forbidden_module_import", node.module, node.lineno))
+            if node.module in {"pexpect", "paramiko"}:
+                self.findings.append(Finding("medium", "manual_review_import", node.module, node.lineno))
+            if node.module in {"socket", "aiohttp"}:
+                self.findings.append(Finding("medium", "network_import_requires_review", node.module, node.lineno))
         self.generic_visit(node)
 
 

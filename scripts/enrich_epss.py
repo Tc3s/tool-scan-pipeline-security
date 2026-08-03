@@ -15,6 +15,7 @@ except ImportError:
 
 EPSS_API_URL = "https://api.first.org/data/v1/epss"
 REQUEST_TIMEOUT = 5  # seconds
+HEADERS = {"User-Agent": "tool-scan-pipeline-security/1.0 (ThreatIntelIngestion)"}
 
 
 def get_epss_score(cve_id: str) -> Tuple[float, float]:
@@ -39,6 +40,7 @@ def get_epss_score(cve_id: str) -> Tuple[float, float]:
         response = requests.get(
             EPSS_API_URL,
             params={"cve": cve_id.upper()},
+            headers=HEADERS,
             timeout=REQUEST_TIMEOUT
         )
         response.raise_for_status()
@@ -94,6 +96,7 @@ def get_epss_scores_batch(cve_ids: list, batch_size: int = 100) -> dict:
             response = requests.get(
                 EPSS_API_URL,
                 params={"cve": batch_str},
+                headers=HEADERS,
                 timeout=30  # Longer timeout for batch
             )
             response.raise_for_status()

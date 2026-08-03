@@ -211,8 +211,11 @@ def calculate_risk_for_row(row) -> dict[str, Any]:
                 final_score = max(final_score, 70)
             final_score = min(final_score, 89)
 
-    if severity == "Critical" and (exploit_available or strong_proof):
+    if severity == "Critical" and (exploit_available or strong_proof) and verification_status not in {"FALSE_POSITIVE", "CHECKED_NOT_REPRODUCED"}:
         final_score = max(final_score, 90)
+
+    if verification_status == "FALSE_POSITIVE":
+        final_score = min(final_score, 39)
 
     priority = priority_from_score(final_score)
 

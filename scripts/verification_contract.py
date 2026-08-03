@@ -29,6 +29,9 @@ except ImportError:
     )
 
 
+import ipaddress
+import socket
+
 APPROVAL_SCHEMA_VERSION = "1.0"
 PLAN_SCHEMA_VERSION = "generated-verifier-plan-1.0"
 RESULT_SCHEMA_VERSION = "verification-result-1.0"
@@ -77,6 +80,18 @@ def write_json(path: str | Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
+def is_private_or_loopback_ip(host_or_ip: str) -> bool:
+    clean_host = clean_text(host_or_ip).lower().rstrip(".")
+    if clean_host in {"localhost", "127.0.0.1", "::1", "169.254.169.254", "metadata.google.internal"}:
+        return True
+    try:
+        ip = ipaddress.ip_address(clean_host)
+        return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved
+    except ValueError:
+        pass
+    return False
+
+
 def canonical_target(target: str) -> str:
     value = clean_text(target)
     if not value:
@@ -89,8 +104,8 @@ def canonical_target(target: str) -> str:
     if not parsed.hostname:
         raise ContractError(f"Target hostname is missing: {target}")
     host = parsed.hostname.lower().rstrip(".")
-    if host in {"localhost", "127.0.0.1", "::1", "169.254.169.254"}:
-        raise ContractError(f"Refusing unsafe target host: {host}")
+    if is_private_or_loopback_ip(host):
+        raise ContractError(f"Refusing unsafe target host or private IP: {host}")
     default_port = 443 if parsed.scheme == "https" else 80
     port = parsed.port or default_port
     netloc = host if port == default_port else f"{host}:{port}"
