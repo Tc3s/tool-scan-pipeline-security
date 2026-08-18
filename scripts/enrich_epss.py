@@ -6,6 +6,7 @@ Fetches EPSS (Exploit Prediction Scoring System) data from FIRST.org API
 
 import requests
 import json
+from pathlib import Path
 from typing import Tuple
 
 try:
@@ -16,6 +17,27 @@ except ImportError:
 EPSS_API_URL = "https://api.first.org/data/v1/epss"
 REQUEST_TIMEOUT = 5  # seconds
 HEADERS = {"User-Agent": "tool-scan-pipeline-security/1.0 (ThreatIntelIngestion)"}
+CACHE_FILE_PATH = Path(".epss_cache.json")
+
+
+def _load_epss_cache() -> dict:
+    if CACHE_FILE_PATH.exists():
+        try:
+            with open(CACHE_FILE_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return {k: (float(v[0]), float(v[1])) for k, v in data.items() if isinstance(v, (list, tuple)) and len(v) >= 2}
+        except Exception:
+            pass
+    return {}
+
+
+def _save_epss_cache(cache: dict) -> None:
+    try:
+        with open(CACHE_FILE_PATH, "w", encoding="utf-8") as f:
+            json.dump(cache, f, ensure_ascii=False)
+    except Exception:
+        pass
 
 
 def get_epss_score(cve_id: str) -> Tuple[float, float]:
@@ -64,13 +86,13 @@ def get_epss_score(cve_id: str) -> Tuple[float, float]:
         return (0.0, 0.0)
 
 
-def get_epss_scores_batch(cve_ids: list, batch_size: int = 100) -> dict:
+def get_epss_scores_batch(cve_ids: list, batch_size: int = 40) -> dict:
     """
     Batch query the FIRST.org EPSS API for multiple CVEs at once.
     
     Args:
         cve_ids: List of CVE identifiers (e.g., ["CVE-2021-44228", "CVE-2017-5638"])
-        batch_size: Number of CVEs per API request (max ~100 recommended)
+        batch_size: Number of CVEs per API request (max ~40 to prevent HTTP 414 URI Too Long)
         
     Returns:
         Dict mapping CVE ID -> (epss_score, percentile).
@@ -87,9 +109,23 @@ def get_epss_scores_batch(cve_ids: list, batch_size: int = 100) -> dict:
         if cve and str(cve).strip().upper().startswith("CVE-")
     ))
     
-    # Process in batches
-    for i in range(0, len(valid_cves), batch_size):
-        batch = valid_cves[i:i + batch_size]
+    cache = _load_epss_cache()
+    missing_cves = []
+    
+    for cve in valid_cves:
+        if cve in cache:
+            results[cve] = cache[cve]
+        else:
+            missing_cves.append(cve)
+            
+    if not missing_cves:
+        return results
+
+    cache_updated = False
+    
+    # Process missing CVEs in batches
+    for i in range(0, len(missing_cves), batch_size):
+        batch = missing_cves[i:i + batch_size]
         batch_str = ",".join(batch)
         
         try:
@@ -109,6 +145,8 @@ def get_epss_scores_batch(cve_ids: list, batch_size: int = 100) -> dict:
                     score = float(entry.get("epss", 0.0))
                     percentile = float(entry.get("percentile", 0.0))
                     results[cve] = (score, percentile)
+                    cache[cve] = (score, percentile)
+                    cache_updated = True
                     
         except requests.exceptions.RequestException:
             # On network error, fall back to individual queries for this batch
@@ -116,8 +154,13 @@ def get_epss_scores_batch(cve_ids: list, batch_size: int = 100) -> dict:
                 score, pct = get_epss_score(cve)
                 if score > 0:
                     results[cve] = (score, pct)
+                    cache[cve] = (score, pct)
+                    cache_updated = True
         except (KeyError, IndexError, ValueError, TypeError):
             pass
+            
+    if cache_updated:
+        _save_epss_cache(cache)
     
     return results
 

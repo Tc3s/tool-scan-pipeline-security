@@ -10,10 +10,10 @@ import pandas as pd
 
 try:
     from scripts import runtime_context as rt
-    from scripts.schema_utils import CANONICAL_FINDING_COLUMNS, normalize_dataframe_schema
+    from scripts.schema_utils import CANONICAL_FINDING_COLUMNS, extract_cves, normalize_dataframe_schema
 except ImportError:
     import runtime_context as rt
-    from schema_utils import CANONICAL_FINDING_COLUMNS, normalize_dataframe_schema
+    from schema_utils import CANONICAL_FINDING_COLUMNS, extract_cves, normalize_dataframe_schema
 
 
 def merge_vulns(
@@ -27,28 +27,70 @@ def merge_vulns(
 
     frames = []
     if zap_path.exists():
-        zap = normalize_dataframe_schema(pd.read_csv(zap_path))
-        print(f"ZAP findings: {len(zap)}")
-        frames.append(zap)
+        try:
+            zap = normalize_dataframe_schema(pd.read_csv(zap_path))
+            print(f"ZAP findings: {len(zap)}")
+            frames.append(zap)
+        except pd.errors.EmptyDataError:
+            print("⚠️  ZAP findings file is empty — merging without ZAP data.")
     else:
         print("⚠️  ZAP findings not found — merging without ZAP data.")
 
     if openvas_path.exists():
-        openvas = normalize_dataframe_schema(pd.read_csv(openvas_path))
-        print(f"OpenVAS findings: {len(openvas)}")
-        frames.append(openvas)
+        try:
+            openvas = normalize_dataframe_schema(pd.read_csv(openvas_path))
+            print(f"OpenVAS findings: {len(openvas)}")
+            frames.append(openvas)
+        except pd.errors.EmptyDataError:
+            print("⚠️  OpenVAS findings file is empty — merging without OpenVAS data.")
     else:
         print("⚠️  OpenVAS findings not found — merging without OpenVAS data.")
 
     if not frames:
         raise FileNotFoundError(f"Missing all normalized scanner inputs: {zap_path}, {openvas_path}")
 
+    import difflib
+
     combined = normalize_dataframe_schema(pd.concat(frames, ignore_index=True))
-    combined.drop_duplicates(
-        subset=["scanner", "asset", "location", "finding_name"],
-        keep="first",
-        inplace=True,
-    )
+    
+    kept_rows = []
+    for _, row in combined.iterrows():
+        is_duplicate = False
+        asset = str(row.get("asset", "")).strip().lower()
+        loc = str(row.get("location", "")).strip().lower()
+        name = str(row.get("finding_name", "")).strip().lower()
+        cves = set(extract_cves(row.get("cve"), row.get("cve_list")))
+        
+        for kept in kept_rows:
+            if asset != str(kept.get("asset", "")).strip().lower() or loc != str(kept.get("location", "")).strip().lower():
+                continue
+                
+            kept_cves = set(extract_cves(kept.get("cve"), kept.get("cve_list")))
+            kept_name = str(kept.get("finding_name", "")).strip().lower()
+            scanner = str(row.get("scanner", "")).strip().lower()
+            kept_scanner = str(kept.get("scanner", "")).strip().lower()
+            plugin_id = str(row.get("plugin_id", "")).strip()
+            kept_plugin_id = str(kept.get("plugin_id", "")).strip()
+            
+            # Case 1: Shared CVE on the same asset & location
+            if cves and kept_cves and not cves.isdisjoint(kept_cves):
+                is_duplicate = True
+                break
+                
+            # Case 2: Same scanner and same plugin ID on the same asset & location
+            if scanner and kept_scanner and scanner == kept_scanner and plugin_id and kept_plugin_id and plugin_id == kept_plugin_id:
+                is_duplicate = True
+                break
+
+            # Case 3: High finding name similarity on the exact same asset & location
+            if difflib.SequenceMatcher(None, name, kept_name).ratio() >= 0.8:
+                is_duplicate = True
+                break
+                
+        if not is_duplicate:
+            kept_rows.append(row)
+            
+    combined = pd.DataFrame(kept_rows) if kept_rows else pd.DataFrame(columns=combined.columns)
 
     front_cols = [column for column in CANONICAL_FINDING_COLUMNS if column in combined.columns]
     remaining_cols = [column for column in combined.columns if column not in front_cols]

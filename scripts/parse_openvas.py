@@ -74,7 +74,7 @@ def parse_openvas_xml(xml_path, output_csv):
         elif severity_val > 0.0:
             sev_cat = 'Low'
         else:
-            sev_cat = 'Log'
+            sev_cat = 'Informational'
         
         # Extract CVEs
         cve_list = []
@@ -116,7 +116,6 @@ def parse_openvas_xml(xml_path, output_csv):
             'description': description,
             'scanner_evidence': description,
             'scanner_solution': solution,
-            # Legacy-compatible aliases. Keep them populated so older scripts do not drop data.
             'evidence': description,
             'solution': solution,
             'evidence_solution': solution,
@@ -135,19 +134,23 @@ def parse_openvas_xml(xml_path, output_csv):
     print(f"✅ Parsed {len(findings)} findings → {output_csv}")
     
     # Stats
-    sev_counts = {'Critical': 0, 'High': 0, 'Medium': 0, 'Low': 0, 'Log': 0}
+    sev_counts = {'Critical': 0, 'High': 0, 'Medium': 0, 'Low': 0, 'Informational': 0}
     cve_count = 0
     for f in findings:
-        sev_counts[f['severity']] += 1
+        sev = f['severity']
+        if sev in sev_counts:
+            sev_counts[sev] += 1
+        else:
+            sev_counts[sev] = 1
         if f['cve']:
             cve_count += 1
     
     print(f"\nSeverity breakdown:")
-    print(f"  Critical: {sev_counts['Critical']}")
-    print(f"  High:     {sev_counts['High']}")
-    print(f"  Medium:   {sev_counts['Medium']}")
-    print(f"  Low:      {sev_counts['Low']}")
-    print(f"  Log:      {sev_counts['Log']}")
+    print(f"  Critical:      {sev_counts.get('Critical', 0)}")
+    print(f"  High:          {sev_counts.get('High', 0)}")
+    print(f"  Medium:        {sev_counts.get('Medium', 0)}")
+    print(f"  Low:           {sev_counts.get('Low', 0)}")
+    print(f"  Informational: {sev_counts.get('Informational', 0)}")
     print(f"\nFindings with CVE: {cve_count}")
     
     return len(findings)

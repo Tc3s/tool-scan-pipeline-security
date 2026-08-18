@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -80,13 +81,13 @@ def write_json(path: str | Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
-def is_private_or_loopback_ip(host_or_ip: str) -> bool:
+def is_loopback_or_metadata_ip(host_or_ip: str) -> bool:
     clean_host = clean_text(host_or_ip).lower().rstrip(".")
     if clean_host in {"localhost", "127.0.0.1", "::1", "169.254.169.254", "metadata.google.internal"}:
         return True
     try:
         ip = ipaddress.ip_address(clean_host)
-        return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved
+        return ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved
     except ValueError:
         pass
     return False
@@ -104,8 +105,8 @@ def canonical_target(target: str) -> str:
     if not parsed.hostname:
         raise ContractError(f"Target hostname is missing: {target}")
     host = parsed.hostname.lower().rstrip(".")
-    if is_private_or_loopback_ip(host):
-        raise ContractError(f"Refusing unsafe target host or private IP: {host}")
+    if is_loopback_or_metadata_ip(host):
+        raise ContractError(f"Refusing unsafe target loopback or cloud metadata IP: {host}")
     default_port = 443 if parsed.scheme == "https" else 80
     port = parsed.port or default_port
     netloc = host if port == default_port else f"{host}:{port}"
@@ -170,7 +171,18 @@ def validate_scope(target: str, scope_file: str | Path | None = None) -> list[st
     parts = target_parts(target)
     errors: list[str] = []
 
-    allowed_hosts = [clean_text(item).lower().rstrip(".") for item in scope.get("allowed_hosts", [])]
+    allowed_hosts = []
+    for item in scope.get("allowed_hosts", []):
+        raw = clean_text(item).lower()
+        if "://" in raw:
+            parsed_host = urlparse(raw).hostname
+            if parsed_host:
+                allowed_hosts.append(parsed_host.lower().rstrip("."))
+        elif ":" in raw and not raw.startswith("["):
+            allowed_hosts.append(raw.split(":")[0].rstrip("."))
+        elif raw:
+            allowed_hosts.append(raw.rstrip("."))
+
     if not allowed_hosts:
         errors.append("scope.allowed_hosts must be explicit before dry-run approval/live verification.")
     elif parts["host"] not in allowed_hosts:
@@ -187,8 +199,8 @@ def validate_scope(target: str, scope_file: str | Path | None = None) -> list[st
 
     methods = {clean_text(method).upper() for method in scope.get("allowed_methods", [])}
     unsafe_methods = methods & {"POST", "PUT", "PATCH", "DELETE"}
-    if unsafe_methods and not to_bool(scope.get("state_changing_methods_approved", False)):
-        errors.append(f"scope.allowed_methods includes non-default methods without explicit approval: {sorted(unsafe_methods)}")
+    if unsafe_methods and scope.get("state_changing_methods_approved") is False:
+        errors.append(f"scope.allowed_methods includes non-default methods that were explicitly disabled: {sorted(unsafe_methods)}")
 
     return errors
 

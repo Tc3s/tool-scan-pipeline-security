@@ -27,6 +27,27 @@ def refresh_queue_risk(input_file: str | Path, output_file: str | Path | None = 
     df["priority"] = [item["priority"] for item in risk_rows]
     df["risk_reason"] = [item["risk_reason"] for item in risk_rows]
     df["risk_components_json"] = [item["risk_components_json"] for item in risk_rows]
+    
+    # Triage Gate: Filter out noise (Low/Info) contextually
+    if "verification_status" not in df.columns:
+        df["verification_status"] = "NOT_VERIFIED"
+        
+    for idx, row in df.iterrows():
+        current_status = str(row.get("verification_status", "")).strip().upper()
+        if current_status and current_status != "NOT_VERIFIED":
+            continue
+            
+        severity = str(row.get("severity", "")).strip().upper()
+        finding_name = str(row.get("finding_name", "")).strip().lower()
+        cwes = (str(row.get("cwe", "")) + " " + str(row.get("cwe_list", ""))).lower()
+        
+        if severity in ["LOW", "INFORMATIONAL", "INFO"]:
+            sensitive_keywords = ["password", "token", "credential", "private key", "backup", "leak", "disclosure", "cve-"]
+            is_sensitive = "cwe-200" in cwes or any(k in finding_name for k in sensitive_keywords)
+            
+            if not is_sensitive:
+                df.at[idx, "verification_status"] = "IGNORED_LOW_RISK"
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(output_path, index=False)
     return len(df)

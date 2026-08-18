@@ -72,9 +72,18 @@ scope hash, or AI context hashes changed after dry-run.
 ## Exports
 
 ```bash
+# Export technical Excel (internal 11 sheets & customer-safe 2 sheets)
 python3 scripts/export_excel.py
+
+# Export SOC/SIEM Schema v1 JSON
 python3 scripts/export_json_soc.py
+
+# Export compact AI context JSONL
 python3 scripts/export_ai_context.py
+
+# Generate executive DOCX report & run 16-assertion quality audit
+python3 docx_analysis_tools/build_perfection_report.py
+python3 docx_analysis_tools/validate_report_perfection.py Bao_Cao_An_Toan_Thong_Tin_2026.docx
 ```
 
 Exporters recalculate risk in memory so reports do not claim stale

@@ -1159,15 +1159,18 @@ if __name__ == "__main__":
             self.assertTrue(any(f["rule"] == "forbidden_dunder_attribute" for f in result_dunder["findings"]))
 
     def test_private_ip_detection(self):
-        from scripts.verification_contract import is_private_or_loopback_ip, canonical_target, ContractError
-        self.assertTrue(is_private_or_loopback_ip("127.0.0.1"))
-        self.assertTrue(is_private_or_loopback_ip("169.254.169.254"))
-        self.assertTrue(is_private_or_loopback_ip("10.0.0.1"))
-        self.assertTrue(is_private_or_loopback_ip("192.168.1.1"))
-        self.assertFalse(is_private_or_loopback_ip("8.8.8.8"))
+        from scripts.verification_contract import is_loopback_or_metadata_ip, canonical_target, ContractError
+        self.assertTrue(is_loopback_or_metadata_ip("127.0.0.1"))
+        self.assertTrue(is_loopback_or_metadata_ip("169.254.169.254"))
+        self.assertFalse(is_loopback_or_metadata_ip("10.0.0.1"))
+        self.assertFalse(is_loopback_or_metadata_ip("192.168.1.1"))
+        self.assertFalse(is_loopback_or_metadata_ip("8.8.8.8"))
 
         with self.assertRaises(ContractError):
             canonical_target("http://127.0.0.1/admin")
+
+        # Normal intranet private IPs are canonicalized cleanly so scope.yml controls authorization
+        self.assertEqual(canonical_target("http://192.168.95.138/admin"), "http://192.168.95.138")
 
     def test_false_positive_critical_risk_override_fixed(self):
         from scripts.calculate_risk_priority import calculate_risk_for_row
@@ -1180,6 +1183,98 @@ if __name__ == "__main__":
         res = calculate_risk_for_row(row)
         self.assertEqual(res["priority"], "P4")
         self.assertLessEqual(res["risk_score"], 39.0)
+
+    def test_merge_does_not_drop_different_findings_sharing_same_cwe(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            zap_csv = temp_path / "zap_findings.csv"
+            ov_csv = temp_path / "openvas_findings.csv"
+            out_csv = temp_path / "vuln_raw.csv"
+
+            # Create two different findings sharing the same general CWE-200 on same host
+            zap_data = pd.DataFrame([{
+                "scanner": "ZAP",
+                "scan_time": "2026-08-18T10:00:00",
+                "asset": "http://192.168.1.50:80",
+                "asset_type": "web",
+                "location": "http://192.168.1.50:80",
+                "url_or_port": "http://192.168.1.50:80",
+                "finding_name": "Robots.txt Information Disclosure",
+                "severity": "Informational",
+                "cvss": "",
+                "cve": "",
+                "cve_list": "[]",
+                "cwe": "CWE-200",
+                "cwe_list": "[\"CWE-200\"]",
+                "plugin_id": "10001",
+                "description": "robots.txt was found",
+                "scanner_evidence": "User-agent: *",
+                "scanner_solution": "Restrict robots.txt",
+            }])
+            ov_data = pd.DataFrame([{
+                "scanner": "OpenVAS",
+                "scan_time": "2026-08-18T10:00:00",
+                "asset": "http://192.168.1.50:80",
+                "asset_type": "web",
+                "location": "http://192.168.1.50:80",
+                "url_or_port": "http://192.168.1.50:80",
+                "finding_name": "Web Server Banner Disclosure",
+                "severity": "Informational",
+                "cvss": "0.0",
+                "cve": "",
+                "cve_list": "[]",
+                "cwe": "CWE-200",
+                "cwe_list": "[\"CWE-200\"]",
+                "plugin_id": "10002",
+                "description": "Server header leaks Apache version",
+                "scanner_evidence": "Server: Apache/2.4.41",
+                "scanner_solution": "Disable ServerTokens",
+            }])
+            zap_data.to_csv(zap_csv, index=False)
+            ov_data.to_csv(ov_csv, index=False)
+
+            count = merge_vulns(zap_file=zap_csv, openvas_file=ov_csv, output_file=out_csv)
+            self.assertEqual(count, 2, "Distinct findings sharing CWE-200 should NOT be deduplicated away")
+
+            merged_df = pd.read_csv(out_csv)
+            self.assertEqual(len(merged_df), 2)
+            names = set(merged_df["finding_name"])
+            self.assertIn("Robots.txt Information Disclosure", names)
+            self.assertIn("Web Server Banner Disclosure", names)
+
+    def test_openvas_parser_severity_informational(self):
+        from scripts.parse_openvas import parse_openvas_xml
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            sample_xml = temp_path / "sample_openvas.xml"
+            output_csv = temp_path / "openvas_out.csv"
+
+            xml_content = """<?xml version="1.0" encoding="UTF-8"?>
+<get_reports_response status="200" status_text="OK">
+  <report id="test-report">
+    <report>
+      <scan_start>2026-08-18T10:00:00Z</scan_start>
+      <results>
+        <result id="res1">
+          <host>192.168.1.100</host>
+          <port>80/tcp</port>
+          <nvt oid="1.3.6.1.4.1.25623.1.0.1000">
+            <name>TCP Timestamps Supported</name>
+            <ref type="cwe" id="200"/>
+          </nvt>
+          <severity>0.0</severity>
+          <description>The remote host implements TCP timestamps.</description>
+        </result>
+      </results>
+    </report>
+  </report>
+</get_reports_response>"""
+            sample_xml.write_text(xml_content, encoding="utf-8")
+            count = parse_openvas_xml(str(sample_xml), str(output_csv))
+            self.assertEqual(count, 1)
+
+            df = pd.read_csv(output_csv)
+            self.assertEqual(df.iloc[0]["severity"], "Informational")
 
 
 if __name__ == "__main__":

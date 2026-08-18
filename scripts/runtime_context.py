@@ -26,19 +26,28 @@ def project_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
+_SESSION_RUN_DIR: Path | None = None
+
+
 def run_dir() -> Path:
+    global _SESSION_RUN_DIR
     env_run_dir = os.environ.get("VA_RUN_DIR")
     if env_run_dir:
         return Path(env_run_dir).expanduser().resolve()
     run_id = os.environ.get("VA_RUN_ID")
     if run_id:
         return project_root() / "runs" / safe_run_id(run_id)
-    return project_root() / "data"
+    if os.environ.get("VA_USE_STATIC_DATA_DIR") == "true":
+        return project_root() / "data"
+    if _SESSION_RUN_DIR is None:
+        auto_run_name = f"run_{datetime.now().astimezone().strftime('%Y%m%d_%H%M%S')}"
+        _SESSION_RUN_DIR = project_root() / "runs" / auto_run_name
+    return _SESSION_RUN_DIR
 
 
 def safe_run_id(value: str) -> str:
     cleaned = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "-" for ch in value.strip())
-    return cleaned.strip(".-") or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return cleaned.strip(".-") or datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
 
 
 def utc_now() -> str:
@@ -180,7 +189,7 @@ def tool_version(command: str) -> str | None:
         "nmap": ["--version"],
         "sqlmap": ["--version"],
         "docker": ["--version"],
-        "searchsploit": ["--version"],
+        "searchsploit": ["-h"],
     }
     args = [binary] + probes.get(command, ["--version"])
     try:
@@ -218,23 +227,51 @@ def base_run_metadata(*, input_file: str | Path | None = None, verifier_file: st
 
 
 def write_scope_template(path: str | Path, target: str) -> None:
-    payload = {
-        "schema_version": "1.0",
-        "target": target,
-        "allowed_hosts": [],
-        "allowed_schemes": ["http", "https"],
-        "allowed_ports": [],
-        "allowed_methods": ["GET", "HEAD", "OPTIONS"],
-        "same_origin_redirects_only": True,
-        "max_requests_per_second": 1,
-        "max_concurrency": 1,
-        "auth_allowed": False,
-        "notes": [
-            "Fill allowed_hosts/allowed_ports explicitly for production runs.",
-            "Leave allowed_ports empty to allow the target URL port only.",
-        ],
-    }
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Lay config/scope.example.yml lam mau goc master
+    example_scope = project_root() / "config" / "scope.example.yml"
+    if example_scope.exists():
+        payload = load_yaml_file(example_scope)
+    else:
+        payload = {}
+
+    from urllib.parse import urlparse
+    parsed = urlparse(target if "://" in target else f"http://{target}")
+    host = (parsed.hostname or "").lower().rstrip(".")
+    default_port = 443 if parsed.scheme == "https" else 80
+    port = parsed.port or default_port
+
+    payload["schema_version"] = payload.get("schema_version", "1.0")
+    payload["target"] = target
+    
+    allowed_hosts = [str(h).lower().rstrip(".") for h in payload.get("allowed_hosts", [])]
+    if host and host not in allowed_hosts and host != "target.example":
+        allowed_hosts.append(host)
+    payload["allowed_hosts"] = [h for h in allowed_hosts if h != "target.example"] or ([host] if host else [])
+
+    allowed_ports = payload.get("allowed_ports", [])
+    if port and port not in allowed_ports:
+        allowed_ports.append(port)
+    payload["allowed_ports"] = allowed_ports
+
+    allowed_schemes = [str(s).lower() for s in payload.get("allowed_schemes", [])]
+    if parsed.scheme and parsed.scheme not in allowed_schemes:
+        allowed_schemes.append(parsed.scheme)
+    payload["allowed_schemes"] = list(dict.fromkeys(["http", "https"] + allowed_schemes))
+    payload.setdefault("allowed_methods", ["GET", "HEAD", "OPTIONS", "POST"])
+    payload["state_changing_methods_approved"] = True
+    payload["allow_zap_full_scan"] = True
+    payload.setdefault("allow_unscoped_scan", False)
+    payload.setdefault("same_origin_redirects_only", True)
+    payload.setdefault("max_requests_per_second", 1)
+    payload.setdefault("max_concurrency", 1)
+    payload.setdefault("auth_allowed", False)
+    payload["notes"] = [
+        "Scope automatically populated from config/scope.example.yml template.",
+        "Adjust allowed_hosts / allowed_ports if additional targets are in scope.",
+    ]
+
     with path.open("w", encoding="utf-8") as handle:
         yaml.safe_dump(payload, handle, sort_keys=False)

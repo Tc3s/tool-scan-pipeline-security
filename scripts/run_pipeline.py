@@ -17,6 +17,7 @@ import glob
 import shlex
 import json
 import tempfile
+import yaml
 import pandas as pd
 from datetime import datetime
 from urllib.parse import urlparse
@@ -40,14 +41,39 @@ except ImportError:
 # Tự động tìm thư mục gốc của project dựa trên vị trí của script này (nằm trong scripts/)
 PROJECT_ROOT = str(rt.project_root())
 SCRIPTS_DIR = str(rt.project_root() / "scripts")
-DATA_DIR = str(rt.run_dir())
-rt.ensure_runtime_dirs()
+
+# Các biến phụ thuộc run_dir() phải được khởi tạo LAZY (trong main/hàm)
+# để timestamp luôn lấy đúng thời điểm chạy, không bị cache lúc import.
+DATA_DIR = None
+RAW_DIR = None
+JSON_REPORT = None
+HTML_REPORT = None
+LOG_FILE = None
 
 ZAP_IMAGE = "ghcr.io/zaproxy/zaproxy:stable"
-RAW_DIR = str(rt.raw_dir())
-JSON_REPORT = os.path.join(RAW_DIR, "zap_report.json")
-HTML_REPORT = os.path.join(RAW_DIR, "zap_report.html")
-LOG_FILE = str(rt.logs_dir() / "pipeline.log")
+
+
+def _init_run_paths():
+    """Khởi tạo tất cả đường dẫn phụ thuộc run_dir(). Gọi 1 lần duy nhất ở đầu main()."""
+    global DATA_DIR, RAW_DIR, JSON_REPORT, HTML_REPORT, LOG_FILE
+    # Reset session để đảm bảo timestamp mới mỗi lần chạy
+    rt._SESSION_RUN_DIR = None
+    DATA_DIR = str(rt.run_dir())
+    # QUAN TRỌNG: Export VA_RUN_DIR để tất cả subprocess con (merge_vulns.py,
+    # calculate_risk_priority.py, export_excel.py...) dùng CÙNG thư mục run,
+    # không tự tạo timestamp mới khi import runtime_context.
+    os.environ["VA_RUN_DIR"] = DATA_DIR
+    rt.ensure_runtime_dirs()
+    RAW_DIR = str(rt.raw_dir())
+    JSON_REPORT = os.path.join(RAW_DIR, "zap_report.json")
+    HTML_REPORT = os.path.join(RAW_DIR, "zap_report.html")
+    LOG_FILE = str(rt.logs_dir() / "pipeline.log")
+    # Thiết lập log rotation SAU KHI LOG_FILE đã sẵn sàng
+    _log_handler = logging.handlers.RotatingFileHandler(LOG_FILE, maxBytes=5*1024*1024, backupCount=5)
+    _log_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    root_logger = logging.getLogger()
+    root_logger.handlers = [_log_handler]
+    root_logger.setLevel(logging.DEBUG)
 
 # ============== TIMEOUT & RESOURCE LIMITS ==============
 MAX_ZAP_SCAN_SECONDS = 12 * 3600         # 12 tiếng tối đa cho subprocess (safety net)
@@ -64,10 +90,8 @@ class C:
     END = '\033[0m'
     BOLD = '\033[1m'
 
-# Log rotation: giữ 5 file log cũ, mỗi file tối đa 5MB
-_log_handler = logging.handlers.RotatingFileHandler(LOG_FILE, maxBytes=5*1024*1024, backupCount=5)
-_log_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-logging.basicConfig(level=logging.DEBUG, handlers=[_log_handler])
+# Log rotation: được khởi tạo trong _init_run_paths() vì LOG_FILE phụ thuộc run_dir()
+logging.basicConfig(level=logging.DEBUG)
 
 class Debugger:
     @staticmethod
@@ -353,17 +377,42 @@ def run_scanning_phase():
         from scripts.verification_contract import validate_scope
     except ImportError:
         from verification_contract import validate_scope
+
+    # Neu scope file chua ton tai, tao scope file tu config/scope.example.yml cho target host hien tai
     if not rt.scope_file().exists():
         rt.write_scope_template(rt.scope_file(), url)
-        Debugger.error(f"Scope file was missing and has been created at {rt.scope_file()}. Review it before active ZAP contact.")
-        if os.environ.get("VA_ALLOW_UNSCOPED_SCAN") != "true":
-            return None, {'mode': 'BLACKBOX', 'cookie': None}
+        Debugger.success(f"Scope file initialized at {rt.scope_file()} for target {url}")
+    else:
+        # Neu scope file da ton tai, tu dong bổ sung target IP/Host vừa nhập vào scope.yml nếu chưa có
+        try:
+            scope_data = rt.load_yaml_file(rt.scope_file())
+            allowed_hosts = [str(h).lower().rstrip(".") for h in scope_data.get("allowed_hosts", [])]
+            target_host = (parsed.hostname or "").lower().rstrip(".")
+            if target_host and target_host not in allowed_hosts:
+                scope_data.setdefault("allowed_hosts", []).append(target_host)
+                port = parsed.port or (443 if parsed.scheme == "https" else 80)
+                if port and port not in scope_data.get("allowed_ports", []):
+                    scope_data.setdefault("allowed_ports", []).append(port)
+                scope_data["state_changing_methods_approved"] = True
+                scope_data["allow_zap_full_scan"] = True
+                with open(rt.scope_file(), "w", encoding="utf-8") as f:
+                    yaml.safe_dump(scope_data, f, sort_keys=False)
+                Debugger.success(f"Tự động bổ sung target {target_host} vào file scope: {rt.scope_file()}")
+        except Exception as exc:
+            Debugger.warning(f"Could not auto-update scope.yml: {exc}")
+
+    scope_data = rt.load_yaml_file(rt.scope_file()) if rt.scope_file().exists() else {}
+    allow_unscoped = (
+        os.environ.get("VA_ALLOW_UNSCOPED_SCAN") == "true"
+        or scope_data.get("allow_unscoped_scan") is True
+    )
+
     scope_errors = validate_scope(url, rt.scope_file())
-    if scope_errors and os.environ.get("VA_ALLOW_UNSCOPED_SCAN") != "true":
+    if scope_errors and not allow_unscoped:
         Debugger.error("Active scan scope validation failed:")
         for item in scope_errors:
             Debugger.error(f"  - {item}")
-        Debugger.info("Set VA_ALLOW_UNSCOPED_SCAN=true only for controlled lab runs.")
+        Debugger.info("Set VA_ALLOW_UNSCOPED_SCAN=true or set allow_unscoped_scan: true in scope.yml for controlled lab runs.")
         return None, {'mode': 'BLACKBOX', 'cookie': None}
 
     # ============== ENGAGEMENT TYPE SELECTION ==============
@@ -397,8 +446,12 @@ def run_scanning_phase():
     choice = input(f"{C.BOLD}👉 Option (1-4): {C.END}").strip()
     script = "zap-baseline.py"; params = []
     if choice == '2':
-        if os.environ.get("VA_ALLOW_ZAP_FULL_SCAN") != "true":
-            Debugger.error("Full ZAP scan requires VA_ALLOW_ZAP_FULL_SCAN=true and should not be used for fragile network/security devices.")
+        allow_full_scan = (
+            os.environ.get("VA_ALLOW_ZAP_FULL_SCAN") == "true"
+            or scope_data.get("allow_zap_full_scan") is True
+        )
+        if not allow_full_scan:
+            Debugger.error("Full ZAP scan requires VA_ALLOW_ZAP_FULL_SCAN=true or allow_zap_full_scan: true in scope.yml.")
             return None, scan_context
         script = "zap-full-scan.py"
     elif choice == '3':
@@ -406,6 +459,26 @@ def run_scanning_phase():
     elif choice == '4':
         params = ["-m", "1", "-T", "5", "-z", "-config spider.maxDepth=1 -config spider.threadCount=1 -config connection.timeoutInSecs=5"]
         Debugger.warning("Fragile Device Baseline selected: use ZAP as secondary scanner evidence only; do not treat it as definitive verification.")
+
+    # Pre-flight check port HTTP/HTTPS cua target truoc khi chay Docker ZAP
+    import socket
+    target_host = parsed.hostname
+    target_port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    Debugger.info(f"Checking web service connectivity to {target_host}:{target_port}...")
+    
+    is_web_open = False
+    try:
+        with socket.create_connection((target_host, target_port), timeout=3):
+            is_web_open = True
+    except Exception:
+        is_web_open = False
+
+    if not is_web_open:
+        Debugger.warning(f"Target {target_host}:{target_port} is NOT listening for Web connections (Connection Refused).")
+        Debugger.info("Thiet bi này la thiet bi mang/ha tang (Non-Web Infrastructure Host) khong chay Web Server.")
+        Debugger.info("ℹ️ ZAP web scan duoc bo qua vi target khong co web server.")
+        Debugger.info("👉 Vui long chay OpenVAS network scan cho host nay, luu file XML vao raw/, sau do chon Option 2 (Process Only).")
+        return None, scan_context
 
     # Xóa report cũ
     for old_report in [JSON_REPORT, HTML_REPORT]:
@@ -635,6 +708,24 @@ def run_threat_intel_phase(target_url, missing_tools=[], scan_context=None):
     ]
     for column in text_columns:
         df[column] = df[column].astype('object').where(pd.notna(df[column]), '')
+        
+    # --- STEP 1.5: Triage Gate (Noise Filtering) ---
+    Debugger.info("🔍 Applying Context-Aware Triage Gate...")
+    ignored_count = 0
+    for idx, row in df.iterrows():
+        severity = str(row.get("severity", "")).strip().upper()
+        finding_name = str(row.get("finding_name", "")).strip().lower()
+        cwes = (str(row.get("cwe", "")) + " " + str(row.get("cwe_list", ""))).lower()
+        
+        if severity in ["LOW", "INFORMATIONAL", "INFO"]:
+            sensitive_keywords = ["password", "token", "credential", "private key", "backup", "leak", "disclosure", "cve-"]
+            is_sensitive = "cwe-200" in cwes or any(k in finding_name for k in sensitive_keywords)
+            
+            if not is_sensitive:
+                df.at[idx, "verification_status"] = "IGNORED_LOW_RISK"
+                ignored_count += 1
+                
+    Debugger.success(f"Triage Gate completed. Ignored {ignored_count} low-risk noise findings.")
     
     # --- STEP 2: Interactive Decision Point ---
     print(f"\n{C.BOLD}{'='*60}{C.END}")
@@ -965,6 +1056,7 @@ Implementation requirements:
     print(f"{C.CYAN}--------------------------------------------------{C.END}")
 
 def main():
+    _init_run_paths()  # Khởi tạo đường dẫn run với timestamp ĐÚNG thời điểm chạy
     os.system('cls' if os.name == 'nt' else 'clear')
     check_directories()
     
@@ -972,6 +1064,7 @@ def main():
     missing_tools = check_external_tools()
 
     print(f"{C.HEADER}{C.BOLD}🛡️   SECURITY PIPELINE (THREAT INTELLIGENCE)   🛡️{C.END}")
+    Debugger.info(f"Active Run Directory: {rt.run_dir()}")
     
     try:
         while True:

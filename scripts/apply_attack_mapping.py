@@ -3,7 +3,7 @@
 """
 ✅ OPTIMIZED: Apply Rule-Based ATT&CK Mapping
 
-Input:  data/normalized/zap_findings.csv (from parse_zap.py)
+Input:  data/output/vuln_raw.csv (from merge_vulns.py)
 Output: data/output/vuln_attack_mapped.csv
 
 V1 baseline:
@@ -187,20 +187,19 @@ def apply_mapping(finding, rules):
 
 # ============== CSV PROCESSING ==============
 def load_findings(input_csv):
-    """Load findings from CSV"""
+    """Load findings from CSV and normalize schema"""
     try:
-        with open(input_csv, 'r', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
-            if not reader.fieldnames:
-                Logger.error(f"Empty CSV file: {input_csv}")
-                return []
-            findings = list(reader)
-        
-        if not findings:
+        df = pd.read_csv(input_csv)
+        if df.empty:
             Logger.warning(f"No findings in {input_csv}")
-        else:
-            Logger.success(f"Loaded {len(findings)} findings from {input_csv}")
-        return normalize_dataframe_schema(pd.read_csv(input_csv)).to_dict('records')
+            return []
+        normalized_df = normalize_dataframe_schema(df)
+        findings = normalized_df.to_dict('records')
+        Logger.success(f"Loaded {len(findings)} findings from {input_csv}")
+        return findings
+    except pd.errors.EmptyDataError:
+        Logger.warning(f"Empty CSV file: {input_csv}")
+        return []
     except FileNotFoundError:
         Logger.error(f"Input file not found: {input_csv}")
         sys.exit(1)
