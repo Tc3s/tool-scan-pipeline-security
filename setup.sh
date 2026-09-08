@@ -119,8 +119,10 @@ else
     echo -e "   ℹ️  Nuclei is already installed."
 fi
 
-if command -v nuclei &> /dev/null; then
-    echo -e "   Updating Nuclei templates..."
+if [ -d "$HOME/nuclei-templates" ] || [ -d "/usr/share/nuclei-templates" ]; then
+    echo -e "   ℹ️  Nuclei templates already present. (Run 'nuclei -ut' manually to refresh)"
+elif command -v nuclei &> /dev/null; then
+    echo -e "   Downloading Nuclei templates..."
     nuclei -ut
 fi
 
@@ -137,10 +139,13 @@ else
     sudo chown -R $USER:$USER /opt/exploitdb 2>/dev/null
 fi
 
-echo -e "   Updating SearchSploit database..."
-# Fix for git dubious ownership inside script
-git config --global --add safe.directory /opt/exploitdb
-searchsploit -u
+if [ -f "/opt/exploitdb/files_exploits.csv" ]; then
+    echo -e "   ℹ️  SearchSploit database already present. (Run 'searchsploit -u' manually to refresh)"
+else
+    echo -e "   Updating SearchSploit database..."
+    git config --global --add safe.directory /opt/exploitdb
+    searchsploit -u
+fi
 
 # 5. Install Metasploit Framework (Official Script)
 echo -e "\n${GREEN}[5/7] Installing Metasploit Framework...${NC}"
@@ -164,17 +169,45 @@ echo -e "   ✅ Project directories initialized: runs/ (dynamic outputs), data/ 
 # 7. Final Configuration & Warm-up
 echo -e "\n${GREEN}[7/7] Finalizing & Initializing tools...${NC}"
 
-echo -e "   Updating Nmap NSE script database..."
-sudo nmap --script-updatedb
+# Detect whether docker can run without sudo
+DOCKER_CMD="docker"
+if ! docker info &>/dev/null; then
+    DOCKER_CMD="sudo docker"
+fi
 
-echo -e "   Pre-pulling OWASP ZAP Docker image (Stable)..."
-# Pull via sudo or user if in docker group
-sudo docker pull ghcr.io/zaproxy/zaproxy:stable
+if [ -f "/usr/share/nmap/scripts/script.db" ]; then
+    echo -e "   ℹ️  Nmap script database already present."
+else
+    echo -e "   Updating Nmap NSE script database..."
+    sudo nmap --script-updatedb
+fi
 
-echo -e "   Pre-pulling OpenVAS (Greenbone) Docker images from compose.yml..."
+ZAP_IMAGE="ghcr.io/zaproxy/zaproxy:stable"
+if $DOCKER_CMD image inspect "$ZAP_IMAGE" &>/dev/null; then
+    echo -e "   ℹ️  OWASP ZAP Docker image already exists ($ZAP_IMAGE), skipping pull."
+else
+    echo -e "   Pre-pulling OWASP ZAP Docker image ($ZAP_IMAGE)..."
+    $DOCKER_CMD pull "$ZAP_IMAGE"
+fi
+
 if [ -f "compose.yml" ]; then
-    sudo docker compose -f compose.yml pull
-    echo -e "   ✅ OpenVAS images downloaded."
+    COMPOSE_IMAGES=$($DOCKER_CMD compose -f compose.yml config --images 2>/dev/null | sort -u)
+    MISSING_COMPOSE=0
+    for img in $COMPOSE_IMAGES; do
+        if ! $DOCKER_CMD image inspect "$img" &>/dev/null; then
+            MISSING_COMPOSE=1
+            break
+        fi
+    done
+
+    if [ "$MISSING_COMPOSE" -eq 0 ] && [ -n "$COMPOSE_IMAGES" ]; then
+        echo -e "   ℹ️  OpenVAS Docker images already downloaded, skipping compose pull."
+        echo -e "      (Run '$DOCKER_CMD compose -f compose.yml pull' manually whenever you wish to refresh feeds)"
+    else
+        echo -e "   Pre-pulling missing OpenVAS (Greenbone) Docker images from compose.yml..."
+        $DOCKER_CMD compose -f compose.yml pull
+        echo -e "   ✅ OpenVAS images downloaded."
+    fi
 else
     echo -e "   ⚠️  compose.yml NOT found, skipping OpenVAS pull."
 fi
