@@ -17,7 +17,7 @@ except ImportError:
 EPSS_API_URL = "https://api.first.org/data/v1/epss"
 REQUEST_TIMEOUT = 5  # seconds
 HEADERS = {"User-Agent": "tool-scan-pipeline-security/1.0 (ThreatIntelIngestion)"}
-CACHE_FILE_PATH = Path(".epss_cache.json")
+CACHE_FILE_PATH = Path(__file__).resolve().parent.parent / ".epss_cache.json"
 
 
 def _load_epss_cache() -> dict:

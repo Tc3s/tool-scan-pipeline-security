@@ -22,13 +22,7 @@ def refresh_queue_risk(input_file: str | Path, output_file: str | Path | None = 
     input_path = Path(input_file)
     output_path = Path(output_file) if output_file else input_path
     df = normalize_dataframe_schema(pd.read_csv(input_path))
-    risk_rows = [calculate_risk_for_row(row) for _, row in df.iterrows()]
-    df["risk_score"] = [item["risk_score"] for item in risk_rows]
-    df["priority"] = [item["priority"] for item in risk_rows]
-    df["risk_reason"] = [item["risk_reason"] for item in risk_rows]
-    df["risk_components_json"] = [item["risk_components_json"] for item in risk_rows]
-    
-    # Triage Gate: Filter out noise (Low/Info) contextually
+    # Triage Gate: Filter out noise (Low/Info) contextually before calculating risk
     if "verification_status" not in df.columns:
         df["verification_status"] = "NOT_VERIFIED"
         
@@ -47,6 +41,12 @@ def refresh_queue_risk(input_file: str | Path, output_file: str | Path | None = 
             
             if not is_sensitive:
                 df.at[idx, "verification_status"] = "IGNORED_LOW_RISK"
+
+    risk_rows = [calculate_risk_for_row(row) for _, row in df.iterrows()]
+    df["risk_score"] = [item["risk_score"] for item in risk_rows]
+    df["priority"] = [item["priority"] for item in risk_rows]
+    df["risk_reason"] = [item["risk_reason"] for item in risk_rows]
+    df["risk_components_json"] = [item["risk_components_json"] for item in risk_rows]
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(output_path, index=False)

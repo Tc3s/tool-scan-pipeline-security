@@ -44,8 +44,36 @@ def show_stats(csv_file):
         for f in sorted(high_pri, key=lambda x: (x.get('priority', ''), -float(x.get('risk_score') or 0))):
             score = float(f.get('risk_score') or 0)
             print(f"   [{f.get('priority', '')}] {score:4.1f} | {f.get('finding_name', '')[:60]}")
-            print(f"        → {f.get('attack_technique_id', '')} {f.get('attack_technique_name', '')}")
-            print(f"        → {f.get('reason', '')[:80]}")
+            reason = f.get('risk_reason', f.get('reason', ''))
+            print(f"        → {reason[:80]}")
 
 if __name__ == '__main__':
-    show_stats(rt.output_dir() / 'vuln_attack_enriched.csv')
+    import sys
+    from pathlib import Path
+
+    if len(sys.argv) > 1 and sys.argv[1]:
+        csv_target = Path(sys.argv[1])
+    else:
+        # Check current run output dir first
+        candidates = [
+            rt.output_dir() / 'vuln_validation_queue.csv',
+            rt.output_dir() / 'vuln_attack_enriched.csv',
+        ]
+        # Check latest runs directory if current run is empty
+        runs_dir = rt.project_root() / 'runs'
+        if runs_dir.exists():
+            recent_runs = sorted(runs_dir.glob('run_*'), key=lambda p: p.stat().st_mtime, reverse=True)
+            for r in recent_runs:
+                candidates.extend([
+                    r / 'output' / 'vuln_validation_queue.csv',
+                    r / 'output' / 'vuln_attack_enriched.csv',
+                ])
+        csv_target = next((c for c in candidates if c.exists()), None)
+
+    if csv_target and csv_target.exists():
+        print(f"📖 Reading: {csv_target}")
+        show_stats(csv_target)
+    else:
+        print("❌ Error: No enriched or validation queue CSV found. Please specify a file: python3 scripts/show_stats.py <path_to_csv>")
+        sys.exit(1)
+

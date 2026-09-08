@@ -49,7 +49,7 @@ def main():
 
     # 2. Check Essential Directories
     print_step("Checking Directory Structure")
-    dirs = ["data", "scripts", "mapping", "data/raw", "data/normalized", "data/output"]
+    dirs = ["runs", "data", "scripts", "mapping", "data/raw", "data/normalized", "data/output"]
     for d in dirs:
         full_path = os.path.join(root, d)
         if os.path.exists(full_path):
@@ -59,7 +59,7 @@ def main():
 
     # 3. Check CLI Tools (Binaries)
     print_step("Checking CLI Tool Binaries (PATH)")
-    tools = ["nuclei", "sqlmap", "nmap", "wpscan", "curl", "python3"]
+    tools = ["nuclei", "nmap", "curl", "python3"]
     for t in tools:
         path = shutil.which(t)
         if path:
@@ -106,10 +106,10 @@ def main():
     scripts = [
         "run_pipeline.py", "parse_zap.py", "merge_vulns.py", 
         "apply_attack_mapping.py", "calculate_risk_priority.py", 
-        "export_excel.py", "export_json_soc.py", "export_ai_context.py",
-        "exploit_matcher.py", "parse_openvas.py", "policy_validator.py",
-        "runtime_context.py", "schema_utils.py", "verification_contract.py",
-        "verifier_lifecycle.py", "apply_verification_results.py",
+        "export_excel.py", "export_json_soc.py",
+        "generate_html_report.py", "import_greenbone_report_format.py",
+        "exploit_matcher.py", "parse_openvas.py",
+        "runtime_context.py", "schema_utils.py",
         "refresh_queue_risk.py",
     ]
     for s in scripts:

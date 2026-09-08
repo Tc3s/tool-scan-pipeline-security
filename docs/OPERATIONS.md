@@ -12,13 +12,12 @@ export VA_RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
 export VA_RUN_DIR="$PWD/runs/$VA_RUN_ID"
 ```
 
-If `VA_RUN_DIR` is not set, the development fallback is `data/`.
+If `VA_RUN_DIR` is not set, the pipeline automatically creates a timestamped run directory under `runs/run_YYYYMMDD_HHMMSS/` (or static fallback `data/` if `VA_USE_STATIC_DATA_DIR=true`).
 
 ## Standard Flow
 
-1. Put raw scanner inputs under `$VA_RUN_DIR/raw/`.
-2. Review `$VA_RUN_DIR/scope.yml`. Production scope must have explicit
-   `allowed_hosts`, schemes, ports, methods, request rate, and concurrency.
+1. Put raw scanner inputs under `$VA_RUN_DIR/raw/` (if using Option 2: Process Only).
+2. For Active Scanning, the Target URL entered by the operator is directly authorized as scope. Reviewing `$VA_RUN_DIR/scope.yml` is completely optional (used only if strict multi-host enterprise whitelists or rate constraints are formally required).
 3. Run the pipeline:
 
 ```bash
@@ -29,46 +28,6 @@ For fragile network/security devices, prefer `Process Only` with existing
 scanner output. If ZAP is used at all, use baseline or fragile baseline as a
 secondary source, not as primary proof.
 
-## AI Verifier Flow
-
-Generated verifier code is per-run runtime data:
-
-```bash
-$VA_RUN_DIR/generated/verify_vulns.py
-```
-
-Do not commit it as stable source. Do not create `scripts/verify_vulns.py`.
-
-Give the AI agent the prompt printed by the pipeline and require it to read:
-
-```text
-docs/VERIFY.md
-```
-
-Then run the stable lifecycle wrapper:
-
-```bash
-python3 scripts/verifier_lifecycle.py --mode BLACKBOX --verifier-file "$VA_RUN_DIR/generated/verify_vulns.py" prepare https://target.example
-python3 scripts/verifier_lifecycle.py --mode BLACKBOX --verifier-file "$VA_RUN_DIR/generated/verify_vulns.py" dry-run https://target.example
-```
-
-Review:
-
-```text
-$VA_RUN_DIR/verification/verification_plan.json
-$VA_RUN_DIR/approval_manifest.json
-```
-
-Approve only after operator review:
-
-```bash
-python3 scripts/verifier_lifecycle.py --mode BLACKBOX --verifier-file "$VA_RUN_DIR/generated/verify_vulns.py" approve https://target.example --operator analyst
-python3 scripts/verifier_lifecycle.py --mode BLACKBOX --verifier-file "$VA_RUN_DIR/generated/verify_vulns.py" run https://target.example
-```
-
-The wrapper rejects live verification if verifier hash, target, queue hash,
-scope hash, or AI context hashes changed after dry-run.
-
 ## Exports
 
 ```bash
@@ -78,12 +37,8 @@ python3 scripts/export_excel.py
 # Export SOC/SIEM Schema v1 JSON
 python3 scripts/export_json_soc.py
 
-# Export compact AI context JSONL
-python3 scripts/export_ai_context.py
-
-# Generate executive DOCX report & run 16-assertion quality audit
-python3 docx_analysis_tools/build_perfection_report.py
-python3 docx_analysis_tools/validate_report_perfection.py Bao_Cao_An_Toan_Thong_Tin_2026.docx
+# Generate interactive DVAS HTML report from OpenVAS XML
+python3 scripts/generate_html_report.py "$VA_RUN_DIR/raw/report.xml" -o "$VA_RUN_DIR/reports/internal/dvas_security_report.html"
 ```
 
 Exporters recalculate risk in memory so reports do not claim stale
@@ -91,11 +46,8 @@ Exporters recalculate risk in memory so reports do not claim stale
 
 ## Go/No-Go
 
-Do not run live verification if:
+Do not run active scans if:
 
-- policy validation fails;
-- dry-run planned scope is broader than expected;
-- approval manifest hashes do not match the reviewed verifier/run inputs;
-- target, allowed hosts, or allowed ports are unclear;
-- the target is a fragile device and proof requires active payloads;
+- target URL or authorization is unclear;
+- the target is a fragile network/security device requiring passive analysis only;
 - the run contains customer secrets that are not allowed on the current host.

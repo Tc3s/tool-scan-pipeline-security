@@ -169,7 +169,7 @@ def detect_scan_mode(df: pd.DataFrame) -> str:
         normalize_verification_status(value)
         for value in df.get("verification_status", pd.Series(dtype=str)).dropna().astype(str)
     }
-    if verification_statuses - {"NOT_VERIFIED"}:
+    if verification_statuses & {"REPRODUCED", "CONFIRMED_PRESENT"}:
         return "ACTIVE_VERIFICATION"
 
     exploit_statuses = {
@@ -192,6 +192,8 @@ def soc_context(row) -> str:
         return "VERIFIED_LOW_PRIORITY"
     if verification_status == "FALSE_POSITIVE":
         return "FALSE_POSITIVE_FILTERED"
+    if verification_status == "IGNORED_LOW_RISK":
+        return "LOW_RISK_NOISE_IGNORED"
     if to_bool(row.get("exploit_available", False)):
         return "PUBLIC_EXPLOIT_AVAILABLE"
     return "POTENTIAL_RISK"
@@ -511,15 +513,12 @@ def build_report(df: pd.DataFrame, input_file: str, customer_safe: bool) -> dict
     scan_mode = detect_scan_mode(df)
     run_meta = rt.base_run_metadata(
         input_file=input_file,
-        verifier_file=rt.verifier_file(),
     )
     run_meta["generated_at"] = utc_timestamp(run_meta.get("generated_at"))
     if customer_safe:
         run_meta["project_root"] = None
         run_meta["run_dir"] = Path(run_meta["run_dir"]).name if run_meta.get("run_dir") else None
         run_meta["input_file"] = Path(input_file).name
-        run_meta["verifier_file"] = Path(run_meta["verifier_file"]).name if run_meta.get("verifier_file") else None
-        run_meta["verifier_sha256"] = None
         run_meta["tool_versions"] = {}
     return {
         "schema_version": "1.0",
@@ -551,6 +550,7 @@ def build_report(df: pd.DataFrame, input_file: str, customer_safe: bool) -> dict
         },
         "reporting": {
             "customer_safe": customer_safe,
+            "pipeline_stage": "TRIAGE_COMPLETE",
             "redaction_scope": "secret-bearing URL/query values, credentials, tokens, scanner evidence, solutions, exploit evidence, and exploit source strings"
             if customer_safe
             else "none",
@@ -569,7 +569,7 @@ def build_report(df: pd.DataFrame, input_file: str, customer_safe: bool) -> dict
         "summary": build_summary(df, scan_mode),
         "warnings": [
             "Exploit intelligence means a public module/PoC/template exists; it is not proof that the target was exploited.",
-            "Verification status must be REPRODUCED or CONFIRMED_PRESENT before claiming target-level exploitability.",
+            "Prioritize remediation based on calculated risk score, exploit availability, and threat context.",
             "Exploit source matching is CVE-based and may need product/service context review.",
         ],
         "findings": [

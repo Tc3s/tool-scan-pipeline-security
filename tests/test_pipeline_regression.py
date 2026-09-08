@@ -23,8 +23,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from scripts.schema_utils import extract_cves, redact_sensitive
-from scripts.run_pipeline import _print_agent_prompt, write_zap_auth_replacer_config, zap_container_config_path
-from scripts.policy_validator import validate_source
+from scripts.run_pipeline import (
+    write_zap_auth_replacer_config,
+    zap_container_config_path,
+    run_threat_intel_phase,
+)
 from scripts.export_json_soc import build_report as build_soc_report
 from scripts.merge_vulns import merge_vulns
 
@@ -32,7 +35,7 @@ from scripts.merge_vulns import merge_vulns
 class PipelineRegressionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls._env_keys = ["VA_RUN_DIR", "VA_RUN_ID", "VA_PROJECT_ROOT", "VA_VERIFIER_FILE", "VA_SCOPE_FILE"]
+        cls._env_keys = ["VA_RUN_DIR", "VA_RUN_ID", "VA_PROJECT_ROOT", "VA_SCOPE_FILE"]
         cls._previous_env = {key: os.environ.get(key) for key in cls._env_keys}
         cls._temp_runtime = tempfile.TemporaryDirectory()
         cls.run_dir = Path(cls._temp_runtime.name) / "va-run"
@@ -41,11 +44,10 @@ class PipelineRegressionTests(unittest.TestCase):
         os.environ["VA_RUN_DIR"] = str(cls.run_dir)
         os.environ["VA_RUN_ID"] = "unit-fixture"
         os.environ["VA_PROJECT_ROOT"] = str(ROOT)
-        os.environ["VA_VERIFIER_FILE"] = str(cls.run_dir / "generated" / "verify_vulns.py")
         os.environ["VA_SCOPE_FILE"] = str(cls.run_dir / "scope.yml")
 
         env = os.environ.copy()
-        for script_name in ["export_excel.py", "export_json_soc.py", "export_ai_context.py"]:
+        for script_name in ["export_excel.py", "export_json_soc.py"]:
             result = subprocess.run(
                 [sys.executable, str(ROOT / "scripts" / script_name)],
                 cwd=ROOT,
@@ -69,9 +71,6 @@ class PipelineRegressionTests(unittest.TestCase):
         cls.internal_soc_path = cls.run_dir / "reports/internal/vuln_report_soc.json"
         cls.xlsx_path = cls.run_dir / "reports/internal/vuln_attack_report.xlsx"
         cls.customer_xlsx_path = cls.run_dir / "reports/customer_safe/vuln_attack_report.xlsx"
-        cls.ai_context_path = cls.run_dir / "ai_context/internal/verification_context.jsonl"
-        cls.customer_ai_context_path = cls.run_dir / "ai_context/customer_safe/verification_context.jsonl"
-        cls.ai_zap_context_path = cls.run_dir / "ai_context/internal/zap_instances_compact.jsonl"
 
         cls.queue = pd.read_csv(cls.queue_path)
 
@@ -428,7 +427,6 @@ class PipelineRegressionTests(unittest.TestCase):
 
         (raw_dir / "zap_report.json").write_text("{}", encoding="utf-8")
         (raw_dir / "openvas_report.xml").write_text("<report />\n", encoding="utf-8")
-        (generated_dir / "verify_vulns.py").write_text("# generated verifier fixture\n", encoding="utf-8")
         (run_dir / "scope.yml").write_text(
             "\n".join([
                 'schema_version: "1.0"',
@@ -551,6 +549,7 @@ class PipelineRegressionTests(unittest.TestCase):
             "SKIPPED_SAFE_MODE",
             "NEEDS_MANUAL_REVIEW",
             "ERROR",
+            "IGNORED_LOW_RISK",
         }
         self.assertTrue(verification_statuses <= allowed_statuses, verification_statuses)
         statuses = set(self.queue["exploit_status"].dropna().unique())
@@ -559,6 +558,43 @@ class PipelineRegressionTests(unittest.TestCase):
         self.assertNotIn("REPRODUCED", statuses)
         self.assertNotIn("CONFIRMED_PRESENT", statuses)
         self.assertIn("exploit_available", self.queue.columns)
+
+    def test_triage_gate_preserves_ignored_low_risk_status(self):
+        """Verify that IGNORED_LOW_RISK is preserved across schema normalization and triage gates."""
+        from scripts.schema_utils import normalize_verification_status, normalize_dataframe_schema
+        from scripts.refresh_queue_risk import refresh_queue_risk
+
+        self.assertEqual(normalize_verification_status("IGNORED_LOW_RISK"), "IGNORED_LOW_RISK")
+        self.assertEqual(normalize_verification_status("ignored"), "IGNORED_LOW_RISK")
+
+        df = pd.DataFrame([{
+            "scanner": "openvas",
+            "finding_name": "HTTP Strict Transport Security Missing Header",
+            "severity": "LOW",
+            "asset": "192.168.1.10",
+            "location": "80/tcp",
+            "description": "HSTS header is missing.",
+            "solution": "Add HSTS header.",
+            "cve": "",
+            "cwe": "",
+            "cvss": 2.6,
+            "evidence": "Strict-Transport-Security not found",
+            "plugin_id": "1.3.6.1.4.1.25623.1.0.105934",
+            "verification_status": "NOT_VERIFIED",
+        }])
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            in_file = Path(tmpdir) / "test_queue.csv"
+            out_file = Path(tmpdir) / "test_refreshed.csv"
+            df.to_csv(in_file, index=False)
+
+            refresh_queue_risk(in_file, out_file)
+            refreshed = pd.read_csv(out_file)
+            self.assertEqual(refreshed.loc[0, "verification_status"], "IGNORED_LOW_RISK")
+
+            # Verify that re-normalizing does NOT reset it back to NOT_VERIFIED
+            renormalized = normalize_dataframe_schema(refreshed)
+            self.assertEqual(renormalized.loc[0, "verification_status"], "IGNORED_LOW_RISK")
 
     def test_attack_mapping_no_fake_full_coverage(self):
         self.assertGreater(int(self.queue["needs_review"].fillna(False).astype(bool).sum()), 0)
@@ -621,6 +657,7 @@ class PipelineRegressionTests(unittest.TestCase):
             "VERIFIED_PRIORITY_REVIEW",
             "VERIFIED_LOW_PRIORITY",
             "FALSE_POSITIVE_FILTERED",
+            "LOW_RISK_NOISE_IGNORED",
             "PUBLIC_EXPLOIT_AVAILABLE",
             "POTENTIAL_RISK",
         }
@@ -647,6 +684,9 @@ class PipelineRegressionTests(unittest.TestCase):
         self.assertIn("context_summary", report["findings"][0]["exploit_intel"])
         for key in ["method", "command", "error", "confidence", "started_at", "completed_at", "safe_mode"]:
             self.assertIn(key, report["findings"][0]["verification"])
+        self.assertEqual(report["reporting"]["pipeline_stage"], "TRIAGE_COMPLETE")
+        self.assertFalse(any("must be REPRODUCED or CONFIRMED_PRESENT" in w for w in report.get("warnings", [])))
+        self.assertTrue(any("Prioritize remediation based on calculated risk score" in w for w in report.get("warnings", [])))
 
     def test_soc_json_mixed_verification_semantics(self):
         df = pd.DataFrame([
@@ -770,6 +810,26 @@ class PipelineRegressionTests(unittest.TestCase):
         severity_ranks = [severity_order.get(value.upper(), 6) for value in customer_severity_values if value]
         self.assertEqual(severity_ranks, sorted(severity_ranks))
 
+        # Verify no "Trạng thái kiểm chứng" message appears in customer detail cells
+        for row in range(5, detail_ws.max_row + 1):
+            detail_val = str(detail_ws.cell(row, 5).value or "")
+            self.assertNotIn("Trạng thái kiểm chứng", detail_val)
+
+        # Verify Customer Summary has "Phân loại phát hiện"
+        overview_texts = [
+            str(customer_wb["Tổng Quan"].cell(row, col).value or "")
+            for row in range(1, customer_wb["Tổng Quan"].max_row + 1)
+            for col in range(1, 4)
+        ]
+        self.assertIn("Phân loại phát hiện", overview_texts)
+
+        # Verify Internal Findings verification column does not have "Chưa kiểm chứng" or empty blanks
+        findings_sheet = internal_sheets["Findings"]
+        self.assertIn("verification", findings_sheet.columns)
+        verif_values = findings_sheet["verification"].dropna().astype(str).tolist()
+        self.assertFalse(any("Chưa kiểm chứng" in v for v in verif_values))
+        self.assertTrue(all(len(v.strip()) > 0 for v in verif_values))
+
         self.assertIn("Sensitive Evidence", internal_sheets)
         self.assertEqual(len(internal_sheets["Findings"]), len(self.queue))
         self.assertGreaterEqual(len(internal_sheets["ZAP Instances"]), 1)
@@ -821,109 +881,6 @@ class PipelineRegressionTests(unittest.TestCase):
         self.assertIn("username=[redacted]", lowered)
         self.assertIn("token=[redacted]", lowered)
 
-    def test_ai_context_jsonl_is_compact_and_verifier_safe(self):
-        self.assertTrue(self.ai_context_path.exists())
-        self.assertTrue(self.customer_ai_context_path.exists())
-        self.assertTrue(self.ai_zap_context_path.exists())
-
-        records = [
-            json.loads(line)
-            for line in self.ai_context_path.read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        ]
-        self.assertEqual(len(records), len(self.queue))
-        self.assertIn("target", records[0])
-        self.assertIn("vulnerability", records[0])
-        self.assertIn("verification", records[0])
-        self.assertIn("exploit_intel", records[0])
-        self.assertIn("safe_mode", records[0]["verification"])
-
-        legacy_agent_statuses = {
-            "NO_CVE_ID",
-            "NO_PUBLIC_EXPLOIT_FOUND",
-            "PUBLIC_EXPLOIT_AVAILABLE",
-            "EXPLOIT_TEMPLATE_AVAILABLE",
-            "INTEL_CHECK_ERROR",
-        }
-        leaked_legacy_statuses = [
-            record["verification"].get("agent_status")
-            for record in records
-            if record["verification"].get("agent_status") in legacy_agent_statuses
-        ]
-        self.assertEqual(leaked_legacy_statuses, [])
-
-        zap_records_with_instances = [
-            record for record in records
-            if record.get("scanner") == "ZAP" and record.get("zap_instances")
-        ]
-        self.assertGreaterEqual(len(zap_records_with_instances), 1)
-
-        zap_instances = [
-            json.loads(line)
-            for line in self.ai_zap_context_path.read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        ]
-        self.assertGreaterEqual(len(zap_instances), len(zap_records_with_instances))
-        self.assertIn("url", zap_instances[0])
-        self.assertIn("method", zap_instances[0])
-
-        safe_text = self.customer_ai_context_path.read_text(encoding="utf-8").lower()
-        for raw_secret in [
-            "postgres:postgres",
-            "msfadmin:msfadmin",
-            "root:root",
-            "password=zap",
-            "username=zap",
-            "token=synthetic-redaction-token",
-            "/sensitive/local/path/tool-scan-pipeline-security",
-            "root123",
-        ]:
-            self.assertNotIn(raw_secret, safe_text)
-
-    def test_agent_prompts_are_production_safe_and_redacted(self):
-        captured = {}
-        for mode, cookie in [
-            ("GREYBOX", "SECRET_COOKIE_SHOULD_NOT_LEAK=abc"),
-            ("BLACKBOX", None),
-        ]:
-            buffer = io.StringIO()
-            with contextlib.redirect_stdout(buffer):
-                _print_agent_prompt(
-                    "http://target.example",
-                    [],
-                    {"mode": mode, "cookie": cookie},
-                )
-            captured[mode] = buffer.getvalue()
-
-        greybox = captured["GREYBOX"]
-        blackbox = captured["BLACKBOX"]
-        all_text = "\n".join(captured.values())
-        lower = all_text.lower()
-
-        self.assertIn("PRODUCTION PRESENCE VERIFIER", greybox)
-        self.assertIn("GREYBOX_AUTHENTICATED", greybox)
-        self.assertIn("VA_AUTH_COOKIE", greybox)
-        self.assertNotIn("SECRET_COOKIE_SHOULD_NOT_LEAK", greybox)
-        self.assertIn("BLACKBOX_UNAUTHENTICATED", blackbox)
-        self.assertIn("No authentication is authorized", blackbox)
-
-        for forbidden in [
-            "--risk 3",
-            "169.254.169.254",
-            "file:///etc/passwd",
-            "root:x:0:0",
-            "ysoserial",
-            "smiley backdoor",
-            "root:<empty>",
-            "full firepower",
-            "elite security",
-            "ssrf probe",
-            "os.system",
-            "harcode session",
-            "hardcode session",
-        ]:
-            self.assertNotIn(forbidden, lower)
-
     def test_zap_auth_config_keeps_cookie_out_of_process_args(self):
         secret = "PHPSESSID=SECRET_COOKIE_SHOULD_NOT_LEAK; token=abc123"
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -948,229 +905,6 @@ class PipelineRegressionTests(unittest.TestCase):
 
             with self.assertRaises(ValueError):
                 write_zap_auth_replacer_config("PHPSESSID=abc\r\nInjected: yes", raw_dir=temp_dir)
-
-    def test_policy_validator_rejects_unsafe_generated_code(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            unsafe = Path(temp_dir) / "bad_verifier.py"
-            unsafe.write_text(
-                "import subprocess\nsubprocess.run('id', shell=True)\n",
-                encoding="utf-8",
-            )
-            result = validate_source(unsafe)
-            self.assertFalse(result["passed"])
-            self.assertTrue(any(item["rule"] == "shell_true" for item in result["findings"]))
-
-    def test_verifier_dry_run_writes_approval_manifest_without_live_run(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            run_dir = Path(temp_dir)
-            output_dir = run_dir / "output"
-            context_dir = run_dir / "ai_context/internal"
-            generated_dir = run_dir / "generated"
-            verification_dir = run_dir / "verification"
-            for path in [output_dir, context_dir, generated_dir, verification_dir]:
-                path.mkdir(parents=True, exist_ok=True)
-
-            queue = pd.DataFrame([{
-                "scanner": "ZAP",
-                "asset": "http://target.example",
-                "asset_type": "web",
-                "location": "http://target.example/",
-                "url_or_port": "http://target.example/",
-                "finding_name": "Missing X-Frame-Options Header",
-                "severity": "Low",
-                "cvss": "",
-                "cve": "",
-                "cwe": "CWE-1021",
-                "plugin_id": "10020",
-                "description": "Header missing",
-                "scanner_evidence": "Scanner reported missing header",
-                "scanner_solution": "Set header",
-                "exploit_status": "NO_CVE_ID",
-                "verification_status": "NOT_VERIFIED",
-            }])
-            queue_file = output_dir / "vuln_validation_queue.csv"
-            queue.to_csv(queue_file, index=False)
-
-            from scripts.verification_contract import finding_id
-            finding = finding_id(queue.iloc[0], 1)
-            (context_dir / "verification_context.jsonl").write_text(
-                json.dumps({"id": finding, "priority": "P4", "scanner": "ZAP", "target": {"location": "http://target.example/"}}) + "\n",
-                encoding="utf-8",
-            )
-            (context_dir / "zap_instances_compact.jsonl").write_text("", encoding="utf-8")
-            (context_dir / "manifest.json").write_text(json.dumps({"record_count": 1}), encoding="utf-8")
-            (run_dir / "scope.yml").write_text(
-                "\n".join([
-                    'schema_version: "1.0"',
-                    'target: "http://target.example"',
-                    "allowed_hosts:",
-                    '  - "target.example"',
-                    "allowed_schemes:",
-                    '  - "http"',
-                    "allowed_ports:",
-                    "  - 80",
-                    "allowed_methods:",
-                    '  - "GET"',
-                    '  - "HEAD"',
-                    '  - "OPTIONS"',
-                    "same_origin_redirects_only: true",
-                    "max_requests_per_second: 1",
-                    "max_concurrency: 1",
-                    "auth_allowed: false",
-                ]),
-                encoding="utf-8",
-            )
-            verifier = generated_dir / "verify_vulns.py"
-            verifier.write_text(
-                """
-#!/usr/bin/env python3
-import argparse
-import json
-from pathlib import Path
-from datetime import datetime, timezone
-
-def now():
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-
-def read_first_id(path):
-    with open(path, encoding="utf-8") as handle:
-        for line in handle:
-            if line.strip():
-                return json.loads(line)["id"]
-    raise SystemExit(1)
-
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("target")
-    parser.add_argument("--mode", required=True)
-    parser.add_argument("--context-file", required=True)
-    parser.add_argument("--zap-context-file", required=True)
-    parser.add_argument("--scope-file", required=True)
-    parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--plan-file")
-    parser.add_argument("--results-file")
-    parser.add_argument("--approval-file")
-    args = parser.parse_args()
-    finding_id = read_first_id(args.context_file)
-    if args.dry_run:
-        Path(args.plan_file).parent.mkdir(parents=True, exist_ok=True)
-        Path(args.plan_file).write_text(json.dumps({
-            "schema_version": "generated-verifier-plan-1.0",
-            "generated_at": now(),
-            "target": args.target,
-            "mode": args.mode,
-            "planned_total": 1,
-            "planned_status_counts": {"CONFIRMED_PRESENT": 1},
-            "planned_methods": ["fixture_header_check"],
-            "manual_review_ids": [],
-            "unsafe_skipped_ids": [],
-        }), encoding="utf-8")
-        return 0
-    if not args.approval_file:
-        return 1
-    Path(args.results_file).parent.mkdir(parents=True, exist_ok=True)
-    Path(args.results_file).write_text(json.dumps({
-        "schema_version": "verification-result-1.0",
-        "finding_id": finding_id,
-        "status": "CONFIRMED_PRESENT",
-        "method": "fixture_header_check",
-        "evidence": "GET http://target.example/ observed the same missing header condition reported by scanner.",
-        "confidence": "HIGH",
-        "safe_mode": True,
-        "completed_at": now(),
-    }) + "\\n", encoding="utf-8")
-    return 0
-
-if __name__ == "__main__":
-    raise SystemExit(main())
-""",
-                encoding="utf-8",
-            )
-
-            env = os.environ.copy()
-            env["VA_RUN_DIR"] = str(run_dir)
-            env["VA_VERIFIER_FILE"] = str(verifier)
-            base_cmd = [
-                sys.executable,
-                str(ROOT / "scripts" / "verifier_lifecycle.py"),
-                "--mode",
-                "BLACKBOX",
-                "--verifier-file",
-                str(verifier),
-            ]
-            dry = subprocess.run(
-                base_cmd + ["dry-run", "http://target.example"],
-                cwd=ROOT,
-                env=env,
-                text=True,
-                capture_output=True,
-                timeout=30,
-                check=False,
-            )
-            self.assertEqual(dry.returncode, 0, dry.stderr)
-            approval = run_dir / "approval_manifest.json"
-            manifest = json.loads(approval.read_text(encoding="utf-8"))
-            self.assertFalse(manifest["approved"])
-            self.assertEqual(manifest["verifier"]["sha256"], hashlib.sha256(verifier.read_bytes()).hexdigest())
-            self.assertEqual(manifest["plan"]["planned_status_counts"], {"CONFIRMED_PRESENT": 1})
-
-            approve = subprocess.run(
-                base_cmd + ["approve", "http://target.example", "--operator", "unit-test"],
-                cwd=ROOT,
-                env=env,
-                text=True,
-                capture_output=True,
-                timeout=30,
-                check=False,
-            )
-            self.assertEqual(approve.returncode, 0, approve.stderr)
-            live = subprocess.run(
-                base_cmd + ["run", "http://target.example"],
-                cwd=ROOT,
-                env=env,
-                text=True,
-                capture_output=True,
-                timeout=30,
-                check=False,
-            )
-            self.assertEqual(live.returncode, 0, live.stderr)
-            updated = pd.read_csv(queue_file)
-            self.assertEqual(updated.loc[0, "verification_status"], "CONFIRMED_PRESENT")
-            self.assertIn("confirmed present on target", updated.loc[0, "risk_reason"])
-
-    def test_policy_validator_rejects_dynamic_reflection_and_dunders(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            bad_reflection = Path(temp_dir) / "bad_reflection.py"
-            bad_reflection.write_text(
-                "import importlib\nmod = importlib.import_module('os')\ngetattr(mod, 'system')('id')\n",
-                encoding="utf-8",
-            )
-            result = validate_source(bad_reflection)
-            self.assertFalse(result["passed"])
-            self.assertTrue(any(f["rule"] in {"forbidden_module_import", "dynamic_reflection_bypass", "dynamic_import_attempt"} for f in result["findings"]))
-
-            bad_dunder = Path(temp_dir) / "bad_dunder.py"
-            bad_dunder.write_text(
-                "x = ().__class__.__subclasses__()\n",
-                encoding="utf-8",
-            )
-            result_dunder = validate_source(bad_dunder)
-            self.assertFalse(result_dunder["passed"])
-            self.assertTrue(any(f["rule"] == "forbidden_dunder_attribute" for f in result_dunder["findings"]))
-
-    def test_private_ip_detection(self):
-        from scripts.verification_contract import is_loopback_or_metadata_ip, canonical_target, ContractError
-        self.assertTrue(is_loopback_or_metadata_ip("127.0.0.1"))
-        self.assertTrue(is_loopback_or_metadata_ip("169.254.169.254"))
-        self.assertFalse(is_loopback_or_metadata_ip("10.0.0.1"))
-        self.assertFalse(is_loopback_or_metadata_ip("192.168.1.1"))
-        self.assertFalse(is_loopback_or_metadata_ip("8.8.8.8"))
-
-        with self.assertRaises(ContractError):
-            canonical_target("http://127.0.0.1/admin")
-
-        # Normal intranet private IPs are canonicalized cleanly so scope.yml controls authorization
-        self.assertEqual(canonical_target("http://192.168.95.138/admin"), "http://192.168.95.138")
 
     def test_false_positive_critical_risk_override_fixed(self):
         from scripts.calculate_risk_priority import calculate_risk_for_row
@@ -1276,6 +1010,304 @@ if __name__ == "__main__":
             df = pd.read_csv(output_csv)
             self.assertEqual(df.iloc[0]["severity"], "Informational")
 
+    def test_merge_preserves_distinct_cves_despite_name_similarity(self):
+        """Ensure findings with distinct CVEs are not dropped due to advisory name similarity."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            ov_csv = temp_path / "openvas_findings.csv"
+            out_csv = temp_path / "vuln_raw.csv"
+
+            # Two PHP advisory findings on the same host & port with >85% name similarity but distinct CVEs
+            ov_data = pd.DataFrame([
+                {
+                    "scanner": "OpenVAS",
+                    "scan_time": "2026-09-08T10:00:00Z",
+                    "asset": "192.168.4.255",
+                    "asset_type": "host",
+                    "location": "443/tcp",
+                    "url_or_port": "443/tcp",
+                    "finding_name": "PHP < 8.1.32, 8.2.x < 8.2.28 Multiple Vulnerabilities - Windows",
+                    "severity": "Critical",
+                    "cvss": 9.8,
+                    "cve": "CVE-2025-1217,CVE-2025-1219",
+                    "cve_list": "[\"CVE-2025-1217\", \"CVE-2025-1219\"]",
+                    "cwe": "",
+                    "cwe_list": "[]",
+                    "plugin_id": "1.3.6.1.4.1.25623.1.0.153689",
+                    "description": "PHP 8.2.28 fixes",
+                    "scanner_evidence": "Version 8.2.12",
+                    "scanner_solution": "Update to 8.2.28",
+                    "instance_count": 1,
+                    "affected_urls_json": "[]",
+                },
+                {
+                    "scanner": "OpenVAS",
+                    "scan_time": "2026-09-08T10:00:00Z",
+                    "asset": "192.168.4.255",
+                    "asset_type": "host",
+                    "location": "443/tcp",
+                    "url_or_port": "443/tcp",
+                    "finding_name": "PHP < 8.1.29, 8.2.x < 8.2.20, 8.3.x < 8.3.8 Multiple Vulnerabilities - Windows",
+                    "severity": "Critical",
+                    "cvss": 9.8,
+                    "cve": "CVE-2024-4577,CVE-2024-5458",
+                    "cve_list": "[\"CVE-2024-4577\", \"CVE-2024-5458\"]",
+                    "cwe": "",
+                    "cwe_list": "[]",
+                    "plugin_id": "1.3.6.1.4.1.25623.1.0.152549",
+                    "description": "BatBadBut vulnerability fixes",
+                    "scanner_evidence": "Version 8.2.12",
+                    "scanner_solution": "Update to 8.2.20",
+                    "instance_count": 1,
+                    "affected_urls_json": "[]",
+                }
+            ])
+            ov_data.to_csv(ov_csv, index=False)
+
+            count = merge_vulns(zap_file=temp_path / "missing_zap.csv", openvas_file=ov_csv, output_file=out_csv)
+            self.assertEqual(count, 2, "Findings with distinct CVEs must NOT be merged/dropped by name similarity")
+
+            merged = pd.read_csv(out_csv)
+            all_cves = set()
+            for cve_str in merged["cve"]:
+                for c in str(cve_str).split(","):
+                    if c.strip():
+                        all_cves.add(c.strip())
+
+            self.assertIn("CVE-2024-4577", all_cves, "BatBadBut CVE-2024-4577 must be preserved!")
+            self.assertIn("CVE-2025-1217", all_cves, "CVE-2025-1217 must be preserved!")
+            self.assertEqual(len(all_cves), 4, "All 4 unique CVEs must be preserved!")
+
+    def test_merge_unions_cves_and_cwes_on_legitimate_duplicates(self):
+        """Ensure legitimate duplicate findings have their CVEs, CWEs and URLs merged via union."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            zap_csv = temp_path / "zap_findings.csv"
+            ov_csv = temp_path / "openvas_findings.csv"
+            out_csv = temp_path / "vuln_raw.csv"
+
+            # ZAP finding has CVE-2024-4577 + CWE-78
+            zap_data = pd.DataFrame([{
+                "scanner": "ZAP",
+                "scan_time": "2026-09-08T10:00:00Z",
+                "asset": "192.168.4.255",
+                "asset_type": "web",
+                "location": "80/tcp",
+                "url_or_port": "80/tcp",
+                "finding_name": "PHP CGI Remote Code Execution",
+                "severity": "High",
+                "cvss": 8.5,
+                "cve": "CVE-2024-4577",
+                "cve_list": "[\"CVE-2024-4577\"]",
+                "cwe": "CWE-78",
+                "cwe_list": "[\"CWE-78\"]",
+                "plugin_id": "40012",
+                "description": "ZAP detected PHP CGI RCE",
+                "scanner_evidence": "response header",
+                "scanner_solution": "Patch PHP",
+                "instance_count": 2,
+                "affected_urls_json": "[\"http://192.168.4.255/index.php\"]",
+            }])
+
+            # OpenVAS finding has shared CVE-2024-4577 + additional CVE-2024-5458 + CWE-94 + higher CVSS 9.8
+            ov_data = pd.DataFrame([{
+                "scanner": "OpenVAS",
+                "scan_time": "2026-09-08T10:00:00Z",
+                "asset": "192.168.4.255",
+                "asset_type": "host",
+                "location": "80/tcp",
+                "url_or_port": "80/tcp",
+                "finding_name": "PHP Multiple Vulnerabilities (BatBadBut)",
+                "severity": "Critical",
+                "cvss": 9.8,
+                "cve": "CVE-2024-4577,CVE-2024-5458",
+                "cve_list": "[\"CVE-2024-4577\", \"CVE-2024-5458\"]",
+                "cwe": "CWE-94",
+                "cwe_list": "[\"CWE-94\"]",
+                "plugin_id": "1.3.6.1.4.1.25623.1.0.152549",
+                "description": "OpenVAS advisory",
+                "scanner_evidence": "PHP version 8.2.12",
+                "scanner_solution": "Upgrade PHP",
+                "instance_count": 1,
+                "affected_urls_json": "[\"http://192.168.4.255/\"]",
+            }])
+
+            zap_data.to_csv(zap_csv, index=False)
+            ov_data.to_csv(ov_csv, index=False)
+
+            count = merge_vulns(zap_file=zap_csv, openvas_file=ov_csv, output_file=out_csv)
+            self.assertEqual(count, 1, "Findings sharing CVE-2024-4577 on the same asset & location should be merged")
+
+            merged = pd.read_csv(out_csv)
+            row = merged.iloc[0]
+
+            # Assert CVE union
+            cves = set(str(row["cve"]).split(","))
+            self.assertIn("CVE-2024-4577", cves)
+            self.assertIn("CVE-2024-5458", cves)
+
+            # Assert CWE union
+            cwes = set(str(row["cwe"]).split(","))
+            self.assertIn("CWE-78", cwes)
+            self.assertIn("CWE-94", cwes)
+
+            # Assert highest CVSS & Severity preserved
+            self.assertEqual(float(row["cvss"]), 9.8)
+            self.assertEqual(row["severity"], "Critical")
+
+            # Assert instance count summed
+            self.assertEqual(int(row["instance_count"]), 3)
+
+    def test_merge_prevents_false_dedup_between_incompatible_vuln_classes(self):
+        """Ensure distinct vulnerability classes on the same server are never merged."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            ov_csv = temp_path / "openvas_findings.csv"
+            out_csv = temp_path / "vuln_raw.csv"
+
+            # Two Apache findings with similar names but incompatible vulnerability classes (SSRF vs Auth Bypass)
+            ov_data = pd.DataFrame([
+                {
+                    "scanner": "OpenVAS",
+                    "scan_time": "2026-09-08T10:00:00Z",
+                    "asset": "192.168.4.255",
+                    "asset_type": "host",
+                    "location": "80/tcp",
+                    "url_or_port": "80/tcp",
+                    "finding_name": "Apache HTTP Server 2.4.0 - 2.4.61 SSRF Vulnerability - Windows",
+                    "severity": "High",
+                    "cvss": 7.5,
+                    "cve": "CVE-2024-40898",
+                    "cve_list": "[\"CVE-2024-40898\"]",
+                    "cwe": "",
+                    "cwe_list": "[]",
+                    "plugin_id": "1.3.6.1.4.1.25623.1.0.152690",
+                    "description": "SSRF in mod_rewrite",
+                    "instance_count": 1,
+                    "affected_urls_json": "[]",
+                },
+                {
+                    "scanner": "OpenVAS",
+                    "scan_time": "2026-09-08T10:00:00Z",
+                    "asset": "192.168.4.255",
+                    "asset_type": "host",
+                    "location": "80/tcp",
+                    "url_or_port": "80/tcp",
+                    "finding_name": "Apache HTTP Server 2.4.7 - 2.4.65 Authentication Bypass Vulnerability - Windows",
+                    "severity": "Medium",
+                    "cvss": 5.0,
+                    "cve": "CVE-2025-66200",
+                    "cve_list": "[\"CVE-2025-66200\"]",
+                    "cwe": "",
+                    "cwe_list": "[]",
+                    "plugin_id": "1.3.6.1.4.1.25623.1.0.153700",
+                    "description": "Auth bypass in mod_authnz_ldap",
+                    "instance_count": 1,
+                    "affected_urls_json": "[]",
+                }
+            ])
+            ov_data.to_csv(ov_csv, index=False)
+
+            count = merge_vulns(zap_file=temp_path / "missing_zap.csv", openvas_file=ov_csv, output_file=out_csv)
+            self.assertEqual(count, 2, "SSRF and Authentication Bypass must NOT be merged together")
+
+    def test_run_threat_intel_phase_executes_automatically_without_ai_prompt(self):
+        """Verify run_threat_intel_phase runs end-to-end without interactive prompts or AI calls."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_dir = Path(temp_dir)
+            output_dir = run_dir / "output"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            enriched_file = output_dir / "vuln_attack_enriched.csv"
+
+            fixture_df = pd.DataFrame([{
+                "scanner": "OpenVAS",
+                "finding_name": "Apache Path Traversal",
+                "severity": "High",
+                "cvss": 7.5,
+                "cve": "CVE-2021-41773",
+                "cve_list": json.dumps(["CVE-2021-41773"]),
+                "cwe": "CWE-22",
+                "cwe_list": json.dumps(["CWE-22"]),
+                "epss": 0.95,
+                "location": "80/tcp",
+                "url_or_port": "80/tcp",
+                "description": "Path traversal in Apache HTTP Server",
+                "scanner_evidence": "Found path traversal",
+                "verification_status": "NOT_VERIFIED",
+            }])
+            fixture_df.to_csv(enriched_file, index=False)
+
+            previous_run_dir = os.environ.get("VA_RUN_DIR")
+            try:
+                os.environ["VA_RUN_DIR"] = str(run_dir)
+                buf = io.StringIO()
+                with contextlib.redirect_stdout(buf):
+                    run_threat_intel_phase("http://target.example", missing_tools=[])
+
+                queue_file = output_dir / "vuln_validation_queue.csv"
+                self.assertTrue(queue_file.exists(), "vuln_validation_queue.csv should be generated")
+                result_df = pd.read_csv(queue_file)
+                self.assertEqual(len(result_df), 1)
+                self.assertIn("priority", result_df.columns)
+                self.assertIn("risk_score", result_df.columns)
+                self.assertIn("exploit_status", result_df.columns)
+                self.assertNotEqual(result_df.iloc[0]["exploit_status"], "")
+
+                internal_excel = run_dir / "reports" / "internal" / "vuln_attack_report.xlsx"
+                self.assertTrue(internal_excel.exists(), "Internal Excel should be exported")
+                internal_soc = run_dir / "reports" / "internal" / "vuln_report_soc.json"
+                self.assertTrue(internal_soc.exists(), "Internal SOC JSON should be exported")
+
+                ai_context_folder = run_dir / "ai_context"
+                self.assertFalse(ai_context_folder.exists(), "ai_context folder should NOT be created")
+            finally:
+                if previous_run_dir is not None:
+                    os.environ["VA_RUN_DIR"] = previous_run_dir
+                else:
+                    os.environ.pop("VA_RUN_DIR", None)
+
+    def test_disallowed_tools_excluded_from_checks(self):
+        """Verify sqlmap, nikto, wpscan are excluded from tool checks."""
+        from scripts.run_pipeline import check_external_tools
+
+        # Verify check_external_tools only checks core tools (curl, nmap, nuclei)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            missing = check_external_tools()
+        output_str = buf.getvalue()
+        self.assertNotIn("sqlmap", output_str.lower())
+        self.assertNotIn("nikto", output_str.lower())
+        self.assertNotIn("wpscan", output_str.lower())
+
+    def test_zap_full_scan_selection_not_blocked_by_scope(self):
+        """Verify ZAP Full Scan (Option 2) in run_scanning_phase proceeds without scope restrictions."""
+        from unittest.mock import patch, MagicMock
+        import scripts.run_pipeline as rp
+
+        captured_cmd = []
+        def mock_run_cmd(cmd, **kwargs):
+            captured_cmd.extend(cmd)
+            if rp.JSON_REPORT:
+                Path(rp.JSON_REPORT).parent.mkdir(parents=True, exist_ok=True)
+                Path(rp.JSON_REPORT).write_text('{"@version": "2.14.0", "site": []}', encoding="utf-8")
+            res = MagicMock()
+            res.returncode = 0
+            return res
+
+        # Mock user input: target URL, engagement mode 1 (Blackbox), ZAP mode 2 (Full Deep Scan)
+        inputs = ["http://scanme.nmap.org", "1", "2"]
+        with patch("builtins.input", side_effect=inputs):
+            with patch("socket.create_connection"):
+                with patch("scripts.run_pipeline.run_cmd", side_effect=mock_run_cmd):
+                    with patch("scripts.run_pipeline.fix_permissions"):
+                        result = rp.run_scanning_phase()
+                        self.assertIsNotNone(result)
+                        url, context = result
+                        self.assertEqual(url, "http://scanme.nmap.org")
+                        self.assertEqual(context["mode"], "BLACKBOX")
+                        self.assertTrue(any("zap-full-scan.py" in str(arg) for arg in captured_cmd))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+

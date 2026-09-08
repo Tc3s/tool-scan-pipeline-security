@@ -1,48 +1,38 @@
 # Security Model
 
-The verifier is a production-safe presence verifier. It is not an exploitation
-framework.
+The pipeline is a production-safe vulnerability assessment, normalization, and triage system. It is not an exploitation framework.
 
 ## Trust Boundaries
 
-- Scanner output is untrusted input.
-- AI-generated verifier code is untrusted runtime data until it passes policy
-  validation, dry-run, approval hash binding, and result validation.
-- Generated verifier code must live under `$VA_RUN_DIR/generated/`.
-- Generated verifier code must not update the queue CSV directly.
-- Exploit intelligence is CVE-level context only.
-- Target-level proof exists only when `verification_status` is `REPRODUCED` or
-  `CONFIRMED_PRESENT`.
+- Scanner output (ZAP JSON, OpenVAS XML) is untrusted input.
+- External threat intelligence (MITRE ATT&CK, EPSS, Exploit-DB, Metasploit, Nuclei) is CVE/CWE-level context only.
+- Direct Operator Authorization: The target URL provided by the operator is directly authorized as scan scope.
+- Shell metacharacters are strictly validated and rejected before invoking any external scanner CLI tools.
+- Air-gapped & Offline Safe: Internal reports embed 100% inline assets with zero external network phone-home requests.
+- Disallowed Tools: Exploitation tools (such as `sqlmap`, `nikto`, `wpscan`) are strictly blocked by pipeline policy.
 
 ## Enforcement Layers
 
-1. `docs/VERIFY.md` defines the verifier contract.
-2. `policy_validator.py` blocks obvious unsafe generated-code patterns and
-   missing CLI contract options.
-3. `verifier_lifecycle.py dry-run` compiles the verifier, runs policy checks,
-   and requires a non-network `verification_plan.json`.
-4. `approval_manifest.json` binds target, verifier hash, queue hash, scope hash,
-   and AI context hashes.
-5. `verifier_lifecycle.py run` rejects stale approvals before live target
-   contact.
-6. The generated verifier writes `verification_results.jsonl`.
-7. `apply_verification_results.py` validates status/evidence schema and updates
-   only verification/risk fields.
+1. `scripts/schema_utils.py` enforces Canonical 22-column schema validation and data integrity.
+2. `scripts/run_pipeline.py` validates command injection risks and enforces safe tool execution without shell expansion.
+3. `scripts/merge_vulns.py` preserves disjoint CVEs and deduplicates findings losslessly.
+4. `scripts/generate_html_report.py` enforces HTML entity escaping (`html.escape(quote=True)`) and URL scheme validation (`is_safe_url`) to eliminate Stored XSS.
+5. Export layer segregates internal reports (11 sheets Excel, complete SOC JSON) from customer-safe deliverables (2 sheets Excel, redacted SOC JSON).
 
 ## Disallowed Live Behavior
 
 - brute force, default credential login attempts, or credential stuffing;
 - RCE, deserialization, command execution, SSRF, file-read, upload, write,
   delete, create-account, or destructive fuzzing;
-- redirects or requests outside configured scope;
+- invoking disallowed exploitation tools (`sqlmap`, `nikto`, `wpscan`);
 - leaking raw cookies, passwords, tokens, or Authorization headers;
-- SQLMap/nmap modes that enumerate, exploit, dump, or scan outside exact scope.
+- scanning outside the operator-authorized target.
 
 ## Fragile Devices
 
 Network devices and security appliances should be treated as fragile by
 default. ZAP baseline can be used as secondary scanner evidence only. Do not run
-ZAP full scan, AJAX spider, nuclei intrusive templates, SQLMap, or broad nmap
+ZAP full scan, AJAX spider, nuclei intrusive templates, or broad nmap
 against those targets without a separate written approval and maintenance
 window.
 
@@ -50,5 +40,4 @@ window.
 
 Runtime data is sensitive even when customer-safe redaction is enabled.
 Customer-safe means reduced exposure, not public-safe. Run-specific handoff,
-workthrough, reports, AI context, generated verifiers, and approvals should stay
-under ignored runtime directories.
+workthrough, reports, and audit logs should stay under ignored runtime directories (`runs/`).

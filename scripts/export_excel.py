@@ -153,14 +153,12 @@ def display_source(source: str, customer_safe: bool) -> str:
 def build_summary(df: pd.DataFrame, source: str, customer_safe: bool) -> pd.DataFrame:
     run_meta = rt.base_run_metadata(
         input_file=source,
-        verifier_file=rt.verifier_file(),
     )
     rows = [
         ("Run", "run_id", run_meta.get("run_id"), "Unique runtime identifier."),
         ("Run", "input_file", display_source(source, customer_safe), "Source used to build this report."),
         ("Run", "input_sha256", run_meta.get("input_sha256"), "Input integrity hash."),
         ("Run", "scope_sha256", run_meta.get("scope_sha256"), "Assessment scope integrity hash."),
-        ("Run", "verifier_sha256", run_meta.get("verifier_sha256") if not customer_safe else None, "Internal verifier hash."),
         ("Findings", "total_findings", len(df), "Total rows in the report."),
         (
             "Findings",
@@ -172,11 +170,19 @@ def build_summary(df: pd.DataFrame, source: str, customer_safe: bool) -> pd.Data
         ),
         (
             "Findings",
-            "requires_manual_review",
+            "actionable_findings",
             int(df["verification_status"].apply(lambda value: normalize_verification_status(value) in REVIEW_STATUSES).sum())
             if "verification_status" in df
+            else len(df),
+            "Active findings prioritized for remediation.",
+        ),
+        (
+            "Findings",
+            "ignored_low_risk_noise",
+            int(df["verification_status"].apply(lambda value: normalize_verification_status(value) == "IGNORED_LOW_RISK").sum())
+            if "verification_status" in df
             else 0,
-            "Rows not safely proven by automation.",
+            "Rows filtered out by triage gate as low-risk noise.",
         ),
         ("Threat Intel", "public_exploit_available", int(df["exploit_available"].apply(to_bool).sum()) if "exploit_available" in df else 0, "CVE-level public exploit/template signal, not target proof."),
         ("Review", "needs_attack_mapping_review", int(df["needs_review"].apply(to_bool).sum()) if "needs_review" in df else 0, "ATT&CK mappings that should be reviewed."),
@@ -197,9 +203,9 @@ def build_summary(df: pd.DataFrame, source: str, customer_safe: bool) -> pd.Data
         ),
         (
             "Semantics",
-            "verification_scope",
-            "Only REPRODUCED or CONFIRMED_PRESENT means target-level exploitability was verified.",
-            "Use verification fields for confirmed target-level claims.",
+            "triage_scope",
+            "Findings are prioritized by automated threat intel, risk matrix, and triage gate.",
+            "Review high-priority findings and plan remediation accordingly.",
         ),
     ]
     for column in ["scanner", "severity", "priority", "exploit_status", "verification_status"]:
@@ -212,16 +218,17 @@ def build_summary(df: pd.DataFrame, source: str, customer_safe: bool) -> pd.Data
 def human_verification_status(status: Any) -> str:
     normalized = normalize_verification_status(status)
     labels = {
-        "REPRODUCED": "Đã tái hiện an toàn trên target",
-        "CONFIRMED_PRESENT": "Đã xác nhận tồn tại",
-        "CHECKED_NOT_REPRODUCED": "Đã kiểm tra nhưng không tái hiện",
-        "FALSE_POSITIVE": "Dương tính giả",
-        "NEEDS_MANUAL_REVIEW": "Cần rà soát thủ công",
-        "SKIPPED_SAFE_MODE": "Bỏ qua vì giới hạn an toàn",
-        "ERROR": "Lỗi khi kiểm chứng",
-        "NOT_VERIFIED": "Chưa kiểm chứng",
+        "REPRODUCED": "Confirmed on Target",
+        "CONFIRMED_PRESENT": "Confirmed Present",
+        "CHECKED_NOT_REPRODUCED": "Checked Not Reproduced",
+        "FALSE_POSITIVE": "False Positive",
+        "NEEDS_MANUAL_REVIEW": "Manual Review Required",
+        "SKIPPED_SAFE_MODE": "Skipped Safe Mode",
+        "ERROR": "Scanner Error",
+        "NOT_VERIFIED": "Automated Finding",
+        "IGNORED_LOW_RISK": "Ignored Noise",
     }
-    return labels.get(normalized, normalized)
+    return labels.get(normalized, "Automated Finding")
 
 
 def triage_state(row: pd.Series) -> str:
@@ -237,15 +244,17 @@ def triage_state(row: pd.Series) -> str:
         return "Filtered false positive"
     if status == "CHECKED_NOT_REPRODUCED":
         return "Checked but not reproduced"
-    if status == "SKIPPED_SAFE_MODE":
-        return "Manual review required for safety"
-    if status == "NEEDS_MANUAL_REVIEW":
+    if status == "IGNORED_LOW_RISK":
+        return "Ignored low-risk noise"
+    if status in {"NEEDS_MANUAL_REVIEW", "SKIPPED_SAFE_MODE"}:
         return "Manual review required"
     if status == "ERROR":
-        return "Verification error"
-    if to_bool(row.get("exploit_available", False)):
-        return "Potential risk with public exploit intelligence"
-    return "Potential risk"
+        return "Scanner/verification error"
+    if priority in {"P1", "P2"}:
+        return "High-priority remediation"
+    if priority == "P3":
+        return "Medium-priority remediation"
+    return "Low-priority hardening"
 
 
 def exploit_summary(row: pd.Series) -> str:
@@ -417,7 +426,6 @@ def customer_detail_text(row: pd.Series) -> str:
     parts = [
         f"Tài sản: {clean_text(row.get('asset')) or 'Không xác định'}",
         f"Vị trí: {first_nonempty(row.get('location'), row.get('url_or_port'), max_length=180) or 'Không xác định'}",
-        f"Trạng thái kiểm chứng: {human_verification_status(row.get('verification_status'))}",
     ]
     evidence = evidence_summary(row, max_length=650)
     if evidence:
@@ -593,22 +601,26 @@ def write_customer_overview(writer, df: pd.DataFrame, source: str):
     bar.set_style(11)
     ws.insert_chart("I14", bar, {"x_scale": 0.92, "y_scale": 0.92})
 
-    ws.write_row("A32", ["Trạng thái kiểm chứng", "Số lượng"], f["header"])
+    summary_start_row = max(severity_end_row + 4, 31)
+    ws.write_row(summary_start_row, 0, ["Phân loại phát hiện", "Số lượng"], f["header"])
+    actionable_statuses = CONFIRMED_STATUSES | REVIEW_STATUSES
     status_groups = [
-        ("Đã xác nhận trên target", CONFIRMED_STATUSES),
-        ("Cần rà soát/chưa kiểm chứng", REVIEW_STATUSES),
-        ("Đã loại/không tái hiện", FALSE_POSITIVE_STATUSES),
+        ("Phát hiện hợp lệ cần xử lý", actionable_statuses),
+        ("Đã lọc nhiễu / Rủi ro thấp", {"IGNORED_LOW_RISK"}),
+        ("Đã loại trừ / Dương tính giả", FALSE_POSITIVE_STATUSES),
     ]
-    for idx, (label, statuses) in enumerate(status_groups, start=32):
+    for offset, (label, statuses) in enumerate(status_groups, start=1):
+        curr_row = summary_start_row + offset
         count = int(df.get("verification_status", pd.Series(dtype=str)).apply(lambda value: normalize_verification_status(value) in statuses).sum())
-        ws.write(idx, 0, label, f["cell"])
-        ws.write(idx, 1, count, f["center"])
+        ws.write(curr_row, 0, label, f["cell"])
+        ws.write(curr_row, 1, count, f["center"])
 
-    ws.merge_range("D32:P32", "DIỄN GIẢI", f["section"])
+    summary_end = summary_start_row + len(status_groups)
+    ws.merge_range(summary_start_row, 3, summary_start_row, 15, "DIỄN GIẢI PHÂN LOẠI", f["section"])
     ws.merge_range(
-        "D33:P35",
-        "Chỉ các mục có trạng thái REPRODUCED hoặc CONFIRMED_PRESENT mới được xem là bằng chứng target-level. "
-        "Các mục còn lại là phát hiện scanner hoặc triage cần rà soát trong phạm vi an toàn.",
+        summary_start_row + 1, 3, summary_end, 15,
+        "Các phát hiện được phân loại tự động qua hệ thống lọc nhiễu Triage Gate và làm giàu dữ liệu tình báo "
+        "(EPSS, Exploit-DB, Metasploit, Nuclei) nhằm tối ưu hóa kế hoạch xử lý và khắc phục lỗ hổng an ninh mạng.",
         f["note"],
     )
 
@@ -810,9 +822,9 @@ def load_zap_instances(customer_safe: bool) -> pd.DataFrame:
     return df[existing].copy() if existing else df
 
 
-def write_sheet(writer, df: pd.DataFrame, sheet_name: str):
+def write_sheet(writer, df: pd.DataFrame, sheet_name: str, empty_message: str | None = None):
     if df is None or df.empty:
-        df = pd.DataFrame({"note": ["No data"]})
+        df = pd.DataFrame({"Information": [empty_message or "No data recorded for this section."]})
     df.to_excel(writer, index=False, sheet_name=sheet_name)
     workbook = writer.book
     worksheet = writer.sheets[sheet_name]
@@ -853,7 +865,12 @@ def export_one_report(df: pd.DataFrame, source: str, output_file: Path, customer
     with pd.ExcelWriter(output_file, engine="xlsxwriter") as writer:
         write_sheet(writer, build_summary(report_df, source, customer_safe), "Executive Summary")
         write_sheet(writer, build_action_plan(report_df), "Findings")
-        write_sheet(writer, build_status_view(report_df, CONFIRMED_STATUSES), "Verified Findings")
+        write_sheet(
+            writer,
+            build_status_view(report_df, CONFIRMED_STATUSES),
+            "Verified Findings",
+            empty_message="No manual target-level confirmations recorded. All findings are prioritized via Automated Threat Intelligence & Triage Gate.",
+        )
         write_sheet(writer, build_status_view(report_df, REVIEW_STATUSES), "Needs Review")
         write_sheet(writer, build_status_view(report_df, FALSE_POSITIVE_STATUSES), "False Positives")
         write_sheet(writer, report_df, "Raw Findings")

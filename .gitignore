@@ -17,11 +17,8 @@ data/raw/*
 data/normalized/*
 data/output/*
 data/reports/*
-data/ai_context/*
 data/generated/*
-data/verification/*
 data/logs/*
-data/approval_manifest.json
 runs/*
 docs/workthrought.md
 docs/SESSION_HANDOFF_*.md
@@ -33,6 +30,7 @@ docs/SESSION_HANDOFF_*.md
 /*.xml
 /*.json
 /.~lock.*#
+.~lock.*#
 
 # --- 4. GIỮ LẠI CẤU TRÚC THƯ MỤC (Exception Rules) ---
 # Dùng dấu '!' để bảo Git: "Đừng ignore file .gitkeep"
@@ -41,11 +39,13 @@ docs/SESSION_HANDOFF_*.md
 !data/normalized/.gitkeep
 !data/output/.gitkeep
 !data/reports/.gitkeep
-!data/ai_context/.gitkeep
 !data/generated/.gitkeep
-!data/verification/.gitkeep
 !data/logs/.gitkeep
+!runs/.gitkeep
 
-# --- 5. IDE Settings (Cấu hình trình soạn thảo) ---
+# --- 5. IDE & AI Agents Settings ---
 .vscode/
 .idea/
+.agents/
+.epss_cache.json
+

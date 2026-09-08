@@ -127,6 +127,8 @@ def _verification_component(verification_status: str) -> tuple[int, str]:
         return -10, "checked but not reproduced"
     if verification_status == "FALSE_POSITIVE":
         return -50, "classified false positive"
+    if verification_status == "IGNORED_LOW_RISK":
+        return -25, "filtered low-risk noise"
     return 0, "not actively verified"
 
 
@@ -214,7 +216,7 @@ def calculate_risk_for_row(row) -> dict[str, Any]:
     if severity == "Critical" and (exploit_available or strong_proof) and verification_status not in {"FALSE_POSITIVE", "CHECKED_NOT_REPRODUCED"}:
         final_score = max(final_score, 90)
 
-    if verification_status == "FALSE_POSITIVE":
+    if verification_status in {"FALSE_POSITIVE", "IGNORED_LOW_RISK"}:
         final_score = min(final_score, 39)
 
     priority = priority_from_score(final_score)

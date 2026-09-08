@@ -74,35 +74,6 @@ def ai_context_dir() -> Path:
     return run_dir() / "ai_context"
 
 
-def generated_dir() -> Path:
-    return run_dir() / "generated"
-
-
-def verifier_file() -> Path:
-    env_verifier = os.environ.get("VA_VERIFIER_FILE")
-    if env_verifier:
-        return Path(env_verifier).expanduser().resolve()
-    return generated_dir() / "verify_vulns.py"
-
-
-def verification_dir() -> Path:
-    return run_dir() / "verification"
-
-
-def verification_plan_file() -> Path:
-    env_plan = os.environ.get("VA_VERIFICATION_PLAN_FILE")
-    if env_plan:
-        return Path(env_plan).expanduser().resolve()
-    return verification_dir() / "verification_plan.json"
-
-
-def verification_results_file() -> Path:
-    env_results = os.environ.get("VA_VERIFICATION_RESULTS_FILE")
-    if env_results:
-        return Path(env_results).expanduser().resolve()
-    return verification_dir() / "verification_results.jsonl"
-
-
 def logs_dir() -> Path:
     return run_dir() / "logs"
 
@@ -114,13 +85,6 @@ def scope_file() -> Path:
     return run_dir() / "scope.yml"
 
 
-def approval_file() -> Path:
-    env_approval = os.environ.get("VA_APPROVAL_FILE")
-    if env_approval:
-        return Path(env_approval).expanduser().resolve()
-    return run_dir() / "approval_manifest.json"
-
-
 def ensure_runtime_dirs() -> None:
     for path in [
         raw_dir(),
@@ -128,10 +92,6 @@ def ensure_runtime_dirs() -> None:
         output_dir(),
         reports_dir() / "internal",
         reports_dir() / "customer_safe",
-        ai_context_dir() / "internal",
-        ai_context_dir() / "customer_safe",
-        generated_dir(),
-        verification_dir(),
         logs_dir(),
     ]:
         path.mkdir(parents=True, exist_ok=True)
@@ -187,7 +147,6 @@ def tool_version(command: str) -> str | None:
         "python3": ["--version"],
         "nuclei": ["-version"],
         "nmap": ["--version"],
-        "sqlmap": ["--version"],
         "docker": ["--version"],
         "searchsploit": ["-h"],
     }
@@ -201,7 +160,7 @@ def tool_version(command: str) -> str | None:
 
 
 def collect_tool_versions(commands: list[str] | None = None) -> dict[str, str | None]:
-    commands = commands or ["python3", "docker", "nmap", "sqlmap", "nuclei", "searchsploit"]
+    commands = commands or ["python3", "docker", "nmap", "nuclei", "searchsploit"]
     return {command: tool_version(command) for command in commands}
 
 
@@ -210,7 +169,7 @@ def scope_hash(path: str | Path | None = None) -> str | None:
     return file_sha256(target)
 
 
-def base_run_metadata(*, input_file: str | Path | None = None, verifier_file: str | Path | None = None) -> dict[str, Any]:
+def base_run_metadata(*, input_file: str | Path | None = None) -> dict[str, Any]:
     return {
         "run_id": os.environ.get("VA_RUN_ID") or run_dir().name,
         "generated_at": utc_now(),
@@ -220,8 +179,6 @@ def base_run_metadata(*, input_file: str | Path | None = None, verifier_file: st
         "input_sha256": file_sha256(input_file) if input_file else None,
         "scope_file": display_path(scope_file()) if scope_file().exists() else None,
         "scope_sha256": scope_hash(),
-        "verifier_file": display_path(verifier_file) if verifier_file else None,
-        "verifier_sha256": file_sha256(verifier_file) if verifier_file else None,
         "tool_versions": collect_tool_versions(),
     }
 

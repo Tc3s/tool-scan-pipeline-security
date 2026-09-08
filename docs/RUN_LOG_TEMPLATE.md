@@ -5,9 +5,7 @@
 - Run ID:
 - Operator:
 - Target:
-- Scope file:
-- Verifier script hash:
-- Approval manifest:
+- Scope file (if configured):
 - Scanner input hashes:
 
 ## Processing Summary
@@ -19,25 +17,21 @@
 - MITRE mapped findings:
 - Needs mapping review:
 
-## Verification Summary
+## Verification Status Summary
 
 | Status | Count |
 |---|---:|
-| REPRODUCED | |
+| NOT_VERIFIED | |
+| IGNORED_LOW_RISK | |
 | CONFIRMED_PRESENT | |
-| CHECKED_NOT_REPRODUCED | |
 | FALSE_POSITIVE | |
-| NEEDS_MANUAL_REVIEW | |
-| SKIPPED_SAFE_MODE | |
-| ERROR | |
 
 ## Safety Notes
 
-- Live verification approved by:
-- Approval time:
+- Scan authorized by:
+- Authorization time:
 - Methods used:
-- Scope deviations:
-- Rows requiring manual authorization:
+- Target / Scope notes:
 
 ## Exported Artifacts
 
@@ -45,5 +39,6 @@
 - Customer-safe Excel:
 - Internal SOC JSON:
 - Customer-safe SOC JSON:
-- AI context:
+- Internal DVAS HTML:
+- Customer-safe DVAS HTML:
 

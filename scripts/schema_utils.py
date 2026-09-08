@@ -46,6 +46,7 @@ VERIFICATION_STATUSES = {
     "NEEDS_MANUAL_REVIEW",
     "SKIPPED_SAFE_MODE",
     "ERROR",
+    "IGNORED_LOW_RISK",
 }
 
 EXPLOIT_STATUSES = {
@@ -255,6 +256,8 @@ def normalize_verification_status(status: Any) -> str:
         "NOT_REPRODUCED": "CHECKED_NOT_REPRODUCED",
         "CONFIRMED_INFRA_NO_EXPLOIT": "CONFIRMED_PRESENT",
         "VERIFIED": "CONFIRMED_PRESENT",
+        "IGNORED": "IGNORED_LOW_RISK",
+        "IGNORE_LOW_RISK": "IGNORED_LOW_RISK",
     }
     return legacy.get(status_text, "NOT_VERIFIED")
 

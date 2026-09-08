@@ -42,7 +42,7 @@ def main():
     # 1. Check Directory Structure
     print_step("1. Checking Directory Structure")
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    dirs = ["data/raw", "data/normalized", "data/output", "mapping", "scripts"]
+    dirs = ["runs", "data/raw", "data/normalized", "data/output", "mapping", "scripts"]
     for d in dirs:
         path = os.path.join(root, d)
         if os.path.isdir(path):
@@ -72,7 +72,7 @@ def main():
 
     # 3. Check Security Tools
     print_step("4. Checking Security Tool Binaries")
-    sec_tools = ["nmap", "sqlmap", "nikto", "wpscan", "nuclei", "searchsploit", "msfconsole"]
+    sec_tools = ["nmap", "nuclei", "searchsploit", "msfconsole"]
     for t in sec_tools:
         if shutil.which(t):
             print_ok(f"Found {t}")
@@ -107,13 +107,6 @@ def main():
     # 5. Check Databases and Tool Resources
     print_step("6. Checking Tool Databases & Resources")
     
-    # WPScan DB
-    wpscan_dir = os.path.expanduser("~/.wpscan/db")
-    if os.path.isdir(wpscan_dir) and len(os.listdir(wpscan_dir)) > 0:
-        print_ok("WPScan database is present")
-    else:
-        print_warn("WPScan database might not be updated. Run 'wpscan --update'")
-
     # Nmap scripts
     if os.path.exists("/usr/share/nmap/scripts/script.db"):
         print_ok("Nmap script database is present")

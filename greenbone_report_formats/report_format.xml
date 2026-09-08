@@ -1,0 +1,12 @@
+<!-- Copyright (C) 2026 DVAS Security Intelligence Platform -->
+<report_format id="d7a1249b-8419-482a-9e7f-619da0e7b102">
+  <name>DVAS HTML Report</name>
+  <summary>Interactive DVAS Security Intelligence HTML Report.</summary>
+  <description>Generates a modern, interactive HTML vulnerability assessment report featuring DVAS branding, host-based table of contents, severity breakdown indicators, CVE/CWE cross-references, and expandable vulnerability detail cards.</description>
+  <extension>html</extension>
+  <content_type>text/html</content_type>
+  <report_type>all</report_type>
+  <file name="generate"/>
+  <file name="generate_html.py"/>
+  <file name="report_format.xml"/>
+</report_format>

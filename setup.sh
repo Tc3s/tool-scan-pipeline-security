@@ -25,10 +25,10 @@ echo -e "${BLUE}🚀 Starting Project Setup & Tool Installation...${NC}"
 echo -e "${BLUE}====================================================${NC}"
 
 # 1. Update System & Install OS prerequisites
-echo -e "\n${GREEN}[1/8] Updating system packages and installing OS prerequisites...${NC}"
+echo -e "\n${GREEN}[1/7] Updating system packages and installing OS prerequisites...${NC}"
 sudo apt update && sudo apt upgrade -y
 sudo apt install -y ca-certificates curl python3 python3-pip python3-venv \
-    nmap sqlmap nikto git unzip ruby-full \
+    nmap git unzip \
     libxml2-dev libxslt1-dev python3-dev \
     build-essential libcurl4-openssl-dev zlib1g-dev
 
@@ -68,17 +68,8 @@ if ! groups "$USER" | grep -q "\bdocker\b"; then
     sudo usermod -aG docker "$USER"
 fi
 
-# 2. Install Essential Tools via APT & Ruby
-echo -e "\n${GREEN}[2/8] Installing WPScan via RubyGems...${NC}"
-if ! command -v wpscan &> /dev/null; then
-    sudo gem install wpscan
-    echo -e "   ✅ WPScan installed."
-else
-    echo -e "   ℹ️  WPScan is already installed."
-fi
-
-# 3. Setup Python Virtual Environment
-echo -e "\n${GREEN}[3/8] Setting up Python Virtual Environment (venv)...${NC}"
+# 2. Setup Python Virtual Environment
+echo -e "\n${GREEN}[2/7] Setting up Python Virtual Environment (venv)...${NC}"
 if [ ! -d "venv" ]; then
     python3 -m venv venv
     echo -e "   ✅ Created venv."
@@ -96,8 +87,8 @@ else
     ./venv/bin/pip install pandas openpyxl requests pyyaml xlsxwriter defusedxml python-dotenv lxml
 fi
 
-# 4. Install Nuclei (Binary)
-echo -e "\n${GREEN}[4/8] Installing Nuclei (Latest Binary)...${NC}"
+# 3. Install Nuclei (Binary)
+echo -e "\n${GREEN}[3/7] Installing Nuclei (Latest Binary)...${NC}"
 if ! command -v nuclei &> /dev/null; then
     ARCH=$(uname -m)
     if [ "$ARCH" == "x86_64" ]; then ARCH="amd64"; elif [ "$ARCH" == "aarch64" ]; then ARCH="arm64"; fi
@@ -133,8 +124,8 @@ if command -v nuclei &> /dev/null; then
     nuclei -ut
 fi
 
-# 5. Optional: Install SearchSploit (Exploit-DB from GitLab)
-echo -e "\n${GREEN}[5/8] Installing SearchSploit (Latest from GitLab)...${NC}"
+# 4. Optional: Install SearchSploit (Exploit-DB from GitLab)
+echo -e "\n${GREEN}[4/7] Installing SearchSploit (Latest from GitLab)...${NC}"
 if ! command -v searchsploit &> /dev/null; then
     sudo git clone https://gitlab.com/exploit-database/exploitdb.git /opt/exploitdb
     # Fix ownership so normal user can run searchsploit -u
@@ -151,8 +142,8 @@ echo -e "   Updating SearchSploit database..."
 git config --global --add safe.directory /opt/exploitdb
 searchsploit -u
 
-# 6. Install Metasploit Framework (Official Script)
-echo -e "\n${GREEN}[6/8] Installing Metasploit Framework...${NC}"
+# 5. Install Metasploit Framework (Official Script)
+echo -e "\n${GREEN}[5/7] Installing Metasploit Framework...${NC}"
 if ! command -v msfconsole &> /dev/null; then
     echo -e "   Downloading and running Metasploit installer..."
     curl https://raw.githubusercontent.com/rapid7/metasploit-omnibus/master/config/templates/metasploit-framework-wrappers/msfupdate.erb > msfinstall
@@ -164,21 +155,14 @@ else
     echo -e "   ℹ️  Metasploit is already installed."
 fi
 
-# 7. Setup Directory Structure
-echo -e "\n${GREEN}[7/8] Creating project directory structure...${NC}"
-mkdir -p data/raw data/normalized data/output mapping scripts
-chmod +x scripts/*.py 2>/dev/null
-echo -e "   ✅ data/ scripts/ mapping/ directories ensured."
+# 6. Setup Directory Structure & Dynamic Run Layout
+echo -e "\n${GREEN}[6/7] Creating project directory structure & dynamic run layout...${NC}"
+mkdir -p runs data/raw data/normalized data/output data/reports/internal data/reports/customer_safe mapping scripts config
+chmod +x scripts/*.py greenbone_report_formats/generate greenbone_report_formats/*.py 2>/dev/null || true
+echo -e "   ✅ Project directories initialized: runs/ (dynamic outputs), data/ (fallback), scripts/, mapping/, config/"
 
-# 8. Final Configuration & Warm-up
-echo -e "\n${GREEN}[8/8] Finalizing & Initializing tools...${NC}"
-
-if command -v wpscan &> /dev/null; then
-    echo -e "   Updating WPScan database..."
-    # Ensure local user directory exists to prevent permission errors
-    mkdir -p ~/.wpscan
-    wpscan --update
-fi
+# 7. Final Configuration & Warm-up
+echo -e "\n${GREEN}[7/7] Finalizing & Initializing tools...${NC}"
 
 echo -e "   Updating Nmap NSE script database..."
 sudo nmap --script-updatedb
@@ -203,6 +187,8 @@ echo -e "${BLUE}====================================================${NC}"
 echo -e "\nTo start the pipeline, run:"
 echo -e "   ${YELLOW}source venv/bin/activate${NC}"
 echo -e "   ${YELLOW}python3 scripts/run_pipeline.py${NC}"
+echo -e "\nArtifacts and output directories are dynamically created per run under:"
+echo -e "   ${CYAN}runs/run_YYYYMMDD_HHMMSS/${NC} (or via ${CYAN}VA_RUN_DIR${NC} / ${CYAN}VA_RUN_ID${NC})"
 echo -e "\nTo start OpenVAS (Greenbone) in the background, run:"
 echo -e "   ${CYAN}sudo docker compose -f compose.yml up -d${NC}"
 echo -e "${BLUE}====================================================${NC}\n"
